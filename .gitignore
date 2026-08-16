@@ -1,0 +1,15 @@
+# Secrets live here. Never commit it.
+config.json
+config.json.lock
+
+.work/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Anything that lands in the repo by accident
+*.ts
+*.mp4
+*.flac
+*.log

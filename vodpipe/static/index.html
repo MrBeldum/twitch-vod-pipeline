@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VOD Pipeline</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>%F0%9F%94%B4</text></svg>">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>VOD&nbsp;Pipeline</h1>
+  <div id="connection" class="connection connecting" role="status" aria-live="polite">Connecting…</div>
+  <div id="capabilities" class="badges"></div>
+  <div class="spacer"></div>
+  <div id="disk" class="disk"></div>
+  <button id="settings-toggle" class="ghost">Settings</button>
+</header>
+
+<main>
+  <section id="channels-panel" class="panel">
+    <div class="panel-head">
+      <h2>Channels</h2>
+      <form id="add-channel" autocomplete="off">
+        <input id="channel-input" placeholder="channel name or twitch.tv URL" spellcheck="false">
+        <button type="submit">Add</button>
+      </form>
+    </div>
+    <div id="channels" class="channels"></div>
+  </section>
+
+  <section id="vod-panel" class="panel">
+    <div class="panel-head">
+      <h2>Download a VOD</h2>
+      <form id="add-vod" autocomplete="off">
+        <input id="vod-input" placeholder="twitch.tv/videos/… or video id" spellcheck="false">
+        <input id="vod-start" class="vod-range" placeholder="start (optional)" spellcheck="false" title="HH:MM:SS or seconds — where to begin in the VOD">
+        <input id="vod-duration" class="vod-range" placeholder="length (optional)" spellcheck="false" title="HH:MM:SS or seconds — how much to download">
+        <button type="submit">Download</button>
+      </form>
+    </div>
+    <p class="hint">Downloads an archived VOD through the same pipeline as a live recording:
+      masters, proxies, per-chunk transcripts and rundowns. Leave start/length blank for the whole VOD.</p>
+  </section>
+
+  <section id="live-panel" class="panel">
+    <div class="panel-head"><h2>Recording now</h2></div>
+    <div id="live" class="live"></div>
+  </section>
+
+  <section id="jobs-panel" class="panel collapsed">
+    <div class="panel-head">
+      <h2>Background work <span id="jobs-count" class="pill"></span></h2>
+      <button class="ghost" data-toggle="jobs-panel">Show</button>
+    </div>
+    <div id="jobs" class="jobs"></div>
+  </section>
+
+  <section id="sessions-panel" class="panel">
+    <div class="panel-head"><h2>Sessions</h2></div>
+    <div id="sessions" class="sessions"></div>
+  </section>
+</main>
+
+<div id="settings" class="drawer" hidden>
+  <div class="drawer-head">
+    <h2>Settings</h2>
+    <button id="settings-close" class="ghost">Close</button>
+  </div>
+  <div class="drawer-body">
+    <p class="hint">Secrets are stored in <code>config.json</code> beside the app, which is
+      gitignored. Leave a key field blank to keep the stored value.</p>
+    <div id="settings-fields"></div>
+    <div class="drawer-actions">
+      <button id="settings-save">Save</button>
+      <span id="settings-status" class="hint"></span>
+    </div>
+  </div>
+</div>
+
+<div id="modal" class="modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">
+      <strong id="modal-title"></strong>
+      <div>
+        <button id="modal-reveal" class="ghost">Show in Explorer</button>
+        <button id="modal-close" class="ghost">Close</button>
+      </div>
+    </div>
+    <pre id="modal-body"></pre>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
