@@ -287,7 +287,7 @@ class SemanticIdentityTests(Fixture):
         self.addCleanup(release.set)
         built = object()
 
-        def build(config, secret):
+        def build(config, secret, **options):
             entered.set()
             if not release.wait(5):
                 raise RuntimeError("provider barrier timed out")

@@ -38,7 +38,6 @@ from .locks import (
 )
 from .media import (
     allowed_shortfall,
-    estimate_edit_peak_bytes,
     estimate_proxy_peak_bytes,
     live_duration,
     make_proxy,
@@ -83,7 +82,6 @@ from .summarize import (
     write_rundown,
 )
 from .transcribe import SHORT_READ_TOLERANCE, RollingTranscriber
-from .edit import describe as describe_edit
 from .transcript import load_words, publish_text_sets
 from .util import (
     LOG,
@@ -624,12 +622,8 @@ class Pipeline:
                 folder = safe_name_component(
                     self.config.get("proxies.folder_name", "Proxies"),
                     what="proxies.folder_name")
-                edited = safe_name_component(
-                    self.config.get("edit.folder_name", "Edited"),
-                    what="edit.folder_name")
                 for pattern in ("master/*.partial.mp4",
-                                f"master/{folder}/*.partial.mp4",
-                                f"master/{edited}/*.partial.mp4"):
+                                f"master/{folder}/*.partial.mp4"):
                     for path in session.path.glob(pattern):
                         try:
                             path.unlink()
@@ -1181,7 +1175,6 @@ class Pipeline:
 
         needs_summary = self._recover_summary_state(
             session, chunk, complete=True)
-        actions.extend(self._recover_edit_state(session, chunk, complete=True))
         seam = self._seam_recovery_needed(session, chunk)
         if seam or needs_summary:
             key = f"recover-post:{session.session_id}:{chunk.label}"
@@ -1436,64 +1429,6 @@ class Pipeline:
                                 summary_error="")
         self._refresh_session_index(session)
         return True
-
-    def _recover_edit_state(self, session: Session, chunk: Chunk, *,
-                            complete: bool) -> list[str]:
-        """Adopt, re-queue or skip the edited cut from what is on disk.
-
-        The recorded provenance matters as much as the file: an edit built from
-        a transcript that has since been rebuilt describes different speech, and
-        adopting it silently would hand the operator a cut whose transcript does
-        not match it.
-        """
-        actions: list[str] = []
-        if not self._edit_enabled():
-            if chunk.edit_status != SKIPPED:
-                self.store.update_chunk(session, chunk, edit_status=SKIPPED,
-                                        edit_error="")
-            return actions
-        if chunk.transcript_status == SKIPPED:
-            if chunk.edit_status != SKIPPED:
-                self.store.update_chunk(
-                    session, chunk, edit_status=SKIPPED,
-                    edit_error="no edited cut: it needs a transcript")
-            return actions
-        if not complete or not chunk.master_name:
-            if chunk.edit_status == RUNNING:
-                self.store.update_chunk(session, chunk, edit_status=PENDING,
-                                        edit_error="")
-            return actions
-
-        destination = self._edit_destination(session, chunk)
-        generation = self._current_export_generation(session, chunk)
-        if destination is not None and destination.is_file() and generation:
-            if self._edit_generation(session, chunk) == generation:
-                if chunk.edit_status != DONE or chunk.edit_name != destination.name:
-                    self.store.update_chunk(
-                        session, chunk, edit_status=DONE,
-                        edit_name=destination.name, edit_error="")
-                    actions.append("adopted existing edited cut")
-                return actions
-            LOG.info("%s/%s: the edited cut was built from an older transcript; "
-                     "rebuilding it", session.channel, chunk.label)
-            actions.append("will rebuild a stale edited cut")
-
-        self.store.update_chunk(session, chunk, edit_status=PENDING,
-                                edit_error="", edit_name="")
-        if self._queue_edit(session, chunk) is not None:
-            actions.append("re-queued the edited cut")
-        return actions
-
-    def _edit_generation(self, session: Session, chunk: Chunk) -> str:
-        """Which transcript generation the published edit was built from."""
-        path = (self.transcriber.output_dir(session, chunk) / "edited"
-                / "words.json")
-        try:
-            _, meta = load_words(path)
-        except Exception:
-            return ""
-        value = meta.get("edited_from_generation")
-        return value if isinstance(value, str) else ""
 
     def _seam_recovery_needed(self, session: Session, chunk: Chunk) -> bool:
         if (chunk.index <= 0
@@ -2396,25 +2331,10 @@ class Pipeline:
             self._finish_request_locked(
                 request, "complete", session_id=session.session_id)
 
-    def _queue_final_edits(self, session: Session) -> None:
-        """The last chunk has no successor, so its seam settles when the session
-        does. Queue anything that was waiting on that."""
-        if not self._edit_enabled():
-            return
-        for chunk in session.chunks:
-            if chunk.transcript_status == DONE and chunk.edit_status in (
-                    PENDING, ERROR):
-                try:
-                    self._queue_edit(session, chunk)
-                except Exception as exc:
-                    LOG.warning("%s/%s: could not queue the edited cut: %s",
-                                session.channel, chunk.label, exc)
-
     def _on_session_ended(self, session: Session, request_id: str = "") -> None:
         LOG.info("%s: session ended with %d chunk(s)",
                  session.channel, len(session.chunks))
         self._refresh_session_index(session)
-        self._queue_final_edits(session)
         with self._lifecycle:
             recorder = self._recorders.get(session.channel)
             if recorder is not None and recorder.session is session:
@@ -2450,7 +2370,6 @@ class Pipeline:
         LOG.info("VOD %s: download ended with %d chunk(s)",
                  session.channel, len(session.chunks))
         self._refresh_session_index(session)
-        self._queue_final_edits(session)
         with self._lifecycle:
             for key, recorder in list(self._vod_recorders.items()):
                 if recorder.session is session:
@@ -2489,16 +2408,6 @@ class Pipeline:
 
         job.progress = "queueing proxy"
         self._queue_proxy(session, chunk, ownership=ownership)
-
-        job.progress = "queueing the edited cut"
-        # This chunk's own seam is not settled until its successor finishes, so
-        # what becomes editable here is the *previous* chunk. `_queue_edit`
-        # re-checks that itself; both calls are made because whichever of them
-        # is ready should not wait for the other.
-        previous = session.chunk(chunk.index - 1)
-        if previous is not None:
-            self._queue_edit(session, previous)
-        self._queue_edit(session, chunk)
 
         job.progress = "queueing rundown"
         # AUD2-011: only summarise a transcript that actually finished. The
@@ -2843,270 +2752,6 @@ class Pipeline:
         finally:
             reservation.release()
 
-    # ------------------------------------------------------------- edited cut
-
-    def _edit_enabled(self) -> bool:
-        return bool(self.config.get("edit.enabled", True))
-
-    def _edit_options(self):
-        from .edit import EditOptions
-
-        get = self.config.get
-        return EditOptions(
-            remove_silence=bool(get("edit.remove_silence", True)),
-            noise_floor_db=float(get("edit.noise_floor_db", -41.0)),
-            min_silence_seconds=float(get("edit.min_silence_seconds", 0.2)),
-            min_speech_seconds=float(get("edit.min_speech_seconds", 0.2)),
-            margin_seconds=float(get("edit.margin_seconds", 0.2)),
-            min_cut_seconds=float(get("edit.min_cut_seconds", 0.25)),
-            snap_seconds=0.050,
-            fillers=str(get("edit.fillers", "sounds")),
-            repeats=str(get("edit.repeats", "restarts")),
-            censor=str(get("edit.censor", "mute")),
-            censor_margin_seconds=float(get("edit.censor_margin_seconds", 0.05)),
-            max_removed_fraction=float(get("edit.max_removed_fraction", 0.75)),
-        )
-
-    def _edit_destination(self, session: Session, chunk: Chunk) -> Path | None:
-        if not chunk.master_name:
-            return None
-        master = session.path / "master" / chunk.master_name
-        folder = safe_name_component(
-            str(self.config.get("edit.folder_name", "Edited")),
-            what="edit.folder_name")
-        suffix = str(self.config.get("edit.suffix", "_Edited"))
-        return master.parent / folder / f"{master.stem}{suffix}.mp4"
-
-    def _seam_settled(self, session: Session, chunk: Chunk) -> bool:
-        """Is this chunk's transcript final, or can a later seam still move it?
-
-        The boundary repair rewrites the *tail* of a chunk when its successor
-        finishes, so editing a chunk the moment its own transcript completes
-        means re-encoding two hours of video to account for one word at the
-        join. Waiting for the seam costs at most one chunk of latency on a live
-        recording and saves an entire encode per chunk.
-        """
-        if not self.config.get("transcription.stitch_chunk_boundaries", True):
-            return True
-        following = session.chunk(chunk.index + 1)
-        if following is None:
-            # No successor yet. Only final once the session cannot grow one.
-            return session.status != RECORDING
-        return following.transcript_status in (DONE, SKIPPED, ERROR)
-
-    def _queue_edit(self, session: Session, chunk: Chunk, *,
-                    force: bool = False) -> Job | None:
-        """Queue the edited cut. Heavy and disposable, so `media_jobs`."""
-        if not self._edit_enabled():
-            if chunk.edit_status != SKIPPED:
-                self.store.update_chunk(session, chunk, edit_status=SKIPPED,
-                                        edit_error="")
-                self._refresh_session_index(session)
-            return None
-        if chunk.transcript_status == SKIPPED:
-            # An edit without a transcript is an edit without the word veto,
-            # which is the only thing stopping an acoustic cut landing inside
-            # speech. There is no useful degraded mode, so say so plainly rather
-            # than leaving the artifact pending forever.
-            if chunk.edit_status != SKIPPED:
-                self.store.update_chunk(
-                    session, chunk, edit_status=SKIPPED,
-                    edit_error="no edited cut: it needs a transcript")
-                self._refresh_session_index(session)
-            return None
-        if chunk.transcript_status != DONE and not force:
-            return None
-        if not chunk.master_name:
-            return None
-        if not force and not self._seam_settled(session, chunk):
-            return None
-        generation = self._current_export_generation(session, chunk)
-        if not generation:
-            return None
-
-        key = f"edit:{session.session_id}:{chunk.label}:{generation}"
-        job = self.media_jobs.submit(
-            key,
-            f"{session.channel} {chunk.label}: edited cut",
-            "edit",
-            lambda item: self._make_edit(item, session, chunk, generation),
-        )
-        if job is None and not self._job_active(self.media_jobs, key):
-            self.store.update_chunk(session, chunk, edit_status=ERROR,
-                                    edit_error="the edited cut could not be queued")
-        elif job is not None:
-            self.store.update_chunk(session, chunk, edit_status=PENDING,
-                                    edit_error="")
-        self._refresh_session_index(session)
-        return job
-
-    def _make_edit(self, job: Job, session: Session, chunk: Chunk,
-                   generation: str) -> None:
-        """Every failure here reaches the chunk's own artifact state."""
-        try:
-            self._make_edit_inner(job, session, chunk, generation)
-        except Exception as exc:
-            if chunk.edit_status != ERROR:
-                self.store.update_chunk(session, chunk, edit_status=ERROR,
-                                        edit_error=str(exc))
-            self._refresh_session_index(session)
-            raise
-
-    def _make_edit_inner(self, job: Job, session: Session, chunk: Chunk,
-                         generation: str) -> None:
-        from .edit import EditRefused
-
-        master = session.path / "master" / chunk.master_name
-        if not master.exists():
-            raise RuntimeError("master is missing; cannot build an edited cut")
-        destination = self._edit_destination(session, chunk)
-        if destination is None:
-            raise RuntimeError("the chunk has no master to derive an edit from")
-
-        # Anchored on the output, exactly as a proxy is: a half-hour encode must
-        # never hold the transcript mutation lock, and two encoders staging the
-        # same file is the only conflict this job really has.
-        try:
-            lock = ResourceLock(
-                media_lock_path(self.config.masters_root, destination)).acquire()
-        except ResourceBusy as exc:
-            raise RuntimeError(
-                f"{destination.name} is already being built by another "
-                "pipeline") from exc
-        try:
-            self._build_edit(job, session, chunk, master, destination, generation)
-        except EditRefused as exc:
-            # A refusal is a decision about this recording, not a fault: record
-            # it as a skip so the dashboard explains itself and recovery does
-            # not spend the next restart retrying an encode that will not run.
-            self.store.update_chunk(session, chunk, edit_status=SKIPPED,
-                                    edit_error=f"no edited cut: {exc}")
-            LOG.warning("%s/%s: %s", session.channel, chunk.label, exc)
-            self._refresh_session_index(session)
-        finally:
-            lock.release()
-
-    def _build_edit(self, job: Job, session: Session, chunk: Chunk,
-                    master: Path, destination: Path, generation: str) -> None:
-        from .edit import EditRefused
-        from .render import render_edit
-
-        directory = self.transcriber.output_dir(session, chunk)
-        words, meta = load_words(directory / "words.json")
-        if not meta.get("complete"):
-            raise RuntimeError("an edited cut needs a complete transcript")
-
-        # Adopt rather than re-encode, as `_build_proxy` does. Two queue paths
-        # can reach the same generation -- finalisation and recovery -- and half
-        # an hour of h264 to reproduce a file that is already correct is the
-        # most expensive no-op in the pipeline. `recut` deletes the file first,
-        # so an explicit rebuild is never short-circuited here.
-        if (destination.is_file()
-                and self._edit_generation(session, chunk) == generation):
-            self.store.update_chunk(session, chunk, edit_status=DONE,
-                                    edit_name=destination.name, edit_error="")
-            LOG.info("%s/%s: the edited cut is already current",
-                     session.channel, chunk.label)
-            self._refresh_session_index(session)
-            return
-
-        options = self._edit_options()
-
-        estimate = estimate_edit_peak_bytes(
-            self.tools, master,
-            quality=int(self.config.get("edit.quality", 22)),
-            audio_bitrate=str(self.config.get("edit.audio_bitrate", "192k")))
-        reservation = self.disk_budget.reserve(
-            estimate, f"edited cut for {chunk.label}")
-        work = (self.config.work_root
-                / f"edit_{session.session_id}_{chunk.label}_{generation}")
-        try:
-            self.store.update_chunk(session, chunk, edit_status=RUNNING,
-                                    edit_error="")
-            preference = str(self.config.get("edit.encoder", "auto"))
-            encoder = probe_encoder(self.tools, preference)
-
-            def progress(message: str) -> None:
-                job.progress = message
-
-            try:
-                result = render_edit(
-                    self.tools, master, destination, words, options,
-                    work_dir=work,
-                    censor=self.transcriber.censor(),
-                    audio_stream=self.config.get(
-                        "transcription.audio_stream", "auto"),
-                    encoder=encoder,
-                    quality=int(self.config.get("edit.quality", 22)),
-                    audio_bitrate=str(self.config.get("edit.audio_bitrate", "192k")),
-                    crossfade_seconds=float(
-                        self.config.get("edit.crossfade_ms", 20)) / 1000.0,
-                    mute_ramp_seconds=float(
-                        self.config.get("edit.mute_ramp_ms", 10)) / 1000.0,
-                    session_offset=float(chunk.session_offset),
-                    progress=progress,
-                )
-            except Exception as exc:
-                from .edit import EditRefused as _Refused
-                if isinstance(exc, _Refused) or preference != "auto" \
-                        or encoder == "libx264":
-                    raise
-                # Same reasoning as the proxy: a two-second probe proves the
-                # encoder initialises, not that it survives this media.
-                LOG.warning("%s/%s: %s failed on real media (%s); retrying the "
-                            "edit with libx264", session.channel, chunk.label,
-                            encoder, exc)
-                job.progress = "encoding (software fallback)"
-                result = render_edit(
-                    self.tools, master, destination, words, options,
-                    work_dir=work, censor=self.transcriber.censor(),
-                    audio_stream=self.config.get(
-                        "transcription.audio_stream", "auto"),
-                    encoder="libx264",
-                    quality=int(self.config.get("edit.quality", 22)),
-                    audio_bitrate=str(self.config.get("edit.audio_bitrate", "192k")),
-                    crossfade_seconds=float(
-                        self.config.get("edit.crossfade_ms", 20)) / 1000.0,
-                    mute_ramp_seconds=float(
-                        self.config.get("edit.mute_ramp_ms", 10)) / 1000.0,
-                    session_offset=float(chunk.session_offset),
-                    progress=progress,
-                )
-
-            job.progress = "publishing the edited transcript"
-            self._publish_edit(session, chunk, directory, result, generation,
-                               destination)
-            self.store.update_chunk(session, chunk, edit_status=DONE,
-                                    edit_name=destination.name, edit_error="")
-            LOG.info("%s/%s: edited cut ready (%s, %s)",
-                     session.channel, chunk.label,
-                     human_bytes(destination.stat().st_size),
-                     describe_edit(result.plan))
-        finally:
-            reservation.release()
-            self._refresh_session_index(session)
-
-    def _publish_edit(self, session: Session, chunk: Chunk, directory: Path,
-                      result, generation: str, destination: Path) -> None:
-        """The report, and a transcript describing the *edited* media.
-
-        Without the second transcript the operator is handed a finished cut with
-        no way to text-edit it, which throws away the reason the rest of this
-        pipeline exists. It goes in its own directory so the master's export set
-        is untouched.
-        """
-        from .render import publish_edit
-
-        language = str(
-            load_words(directory / "words.json")[1].get("language") or "en")
-        publish_edit(
-            directory, result, generation=generation, language=language,
-            censor=self.transcriber.censor(),
-            meta={"channel": session.channel,
-                  "session_id": session.session_id,
-                  "chunk": chunk.label,
-                  "session_offset": chunk.session_offset})
-
     def _transcription_ready(self, session: Session, chunk: Chunk) -> bool:
         """Preconditions checked before queueing, so failures are immediate."""
         if not self.config.get("transcription.enabled", True):
@@ -3346,48 +2991,6 @@ class Pipeline:
         if source is None:
             raise RuntimeError(f"cannot write a rundown: {reason}")
         return self._queue_summary(session, chunk)
-
-    def recut(self, session: Session, chunk: Chunk) -> Job | None:
-        """Rebuild the edited cut on request, seam settled or not.
-
-        The manual path deliberately bypasses `_seam_settled`: that rule exists
-        to stop the pipeline spending an encode on a boundary word by itself,
-        not to stop the operator asking for a cut with settings they just
-        changed.
-        """
-        if self.draining:
-            raise RuntimeError("the pipeline is shutting down")
-        self._require_manual_mutation_owner(session, "re-cut")
-        if not self._edit_enabled():
-            raise RuntimeError("edited cuts are switched off in settings")
-        if chunk.transcript_status != DONE:
-            raise RuntimeError(
-                "an edited cut needs a complete transcript for this chunk")
-        if not chunk.master_name or not (
-                session.path / "master" / chunk.master_name).exists():
-            raise RuntimeError("this chunk has no master to cut from")
-        generation = self._current_export_generation(session, chunk)
-        if generation and self._job_active(
-                self.media_jobs,
-                f"edit:{session.session_id}:{chunk.label}:{generation}"):
-            # Checked *before* the delete below. Otherwise a second press while
-            # a build is in flight removes the finished cut and then fails to
-            # queue anything, leaving the operator with neither.
-            raise RuntimeError(
-                "an edited cut for this chunk is already being built")
-        destination = self._edit_destination(session, chunk)
-        if destination is not None and destination.is_file():
-            # A rebuild must actually rebuild. Without this the job key, which
-            # carries the generation, matches the finished edit and the request
-            # silently adopts the file the operator asked to replace.
-            try:
-                destination.unlink()
-            except OSError as exc:
-                raise RuntimeError(
-                    f"could not remove the previous edited cut: {exc}") from exc
-        self.store.update_chunk(session, chunk, edit_status=PENDING,
-                                edit_error="", edit_name="")
-        return self._queue_edit(session, chunk, force=True)
 
     @contextmanager
     def _transcript_mutation_locks(

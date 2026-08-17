@@ -108,6 +108,13 @@ DEFAULTS: dict[str, Any] = {
         # the text lands where the editor expects and a filler can be selected
         # and deleted individually. Turn it off for cleaner reading copy.
         "filler_words": True,
+        # Keep each provider response verbatim under
+        # `transcripts/<chunk>/deepgram/`. `words.json` is the *normalised*
+        # stream -- sorted, de-overlapped, same-start collisions resolved --
+        # which is what every export derives from and is not quite what
+        # Deepgram said. About 15 KB per slice, so ~1.5 MB for a 2-hour
+        # chunk. Archiving can never fail a transcription that succeeded.
+        "keep_raw_responses": True,
         # Length of each rolling slice sent to Deepgram.
         "slice_seconds": 300,
         # Don't bother sending a stub while the chunk is still growing; a partial
@@ -126,53 +133,6 @@ DEFAULTS: dict[str, Any] = {
         # independently, so without this a word on the join is clipped in both.
         "stitch_chunk_boundaries": True,
         "seam_seconds": 6.0,
-    },
-    "edit": {
-        # The cut-down deliverable: silences, fillers and false starts removed,
-        # censored words muted. Derived from the finished master, which is never
-        # touched -- a cut you disagree with costs a re-run, not the recording.
-        "enabled": True,
-        "suffix": "_Edited",
-        "folder_name": "Edited",
-        "encoder": "auto",
-        # Tighter than the proxy's 24: this is a file the operator hands on, and
-        # it is already one generation removed from a stream copy. 22 lands near
-        # the source bitrate on a 1080p60 Twitch capture.
-        "quality": 22,
-        "audio_bitrate": "192k",
-        # -- what to remove ------------------------------------------------
-        "remove_silence": True,
-        # Measured, not guessed: the loudness of a talking stream is strongly
-        # bimodal (p25 -72 dB, p50 -30 dB), so anything in the -35..-50 band
-        # gives the same answer to within two percentage points.
-        "noise_floor_db": -41.0,
-        "min_silence_seconds": 0.200,
-        "min_speech_seconds": 0.200,
-        "margin_seconds": 0.200,
-        # Below this a cut is not worth the jump it creates, so the gap is left
-        # in. Without it the margins leave a tail of 0.1s cuts that add visible
-        # churn and save nothing.
-        "min_cut_seconds": 0.250,
-        # off | sounds | smart. "sounds" is hesitation noises only ("uh", "um")
-        # and is the safe default; "smart" adds "like"/"you know"/"I mean" where
-        # the provider punctuated them as a parenthetical inside a clause.
-        "fillers": "sounds",
-        # off | stutters | restarts. "restarts" also catches repeated phrases
-        # ("I can I can", "that could be that could be").
-        "repeats": "restarts",
-        # off | mute. Muting rather than cutting keeps the timeline, the
-        # transcript and the lip sync intact, so a wrong call costs a moment of
-        # missing audio instead of a broken edit.
-        "censor": "mute",
-        "censor_margin_seconds": 0.050,
-        # Audio crossfade at every join, and the ramp either side of a mute.
-        # A hard splice is a step in the waveform, which is the click the
-        # operator hears as a "pop".
-        "crossfade_ms": 20,
-        "mute_ramp_ms": 10,
-        # Refuse to spend half an hour encoding a plan that deletes most of the
-        # chunk: that is a broken threshold or a silent track, not an edit.
-        "max_removed_fraction": 0.75,
     },
     "summary": {
         "enabled": True,

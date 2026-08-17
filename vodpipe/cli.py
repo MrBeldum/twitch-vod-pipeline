@@ -36,7 +36,7 @@ from .util import (
 # names one before defaulting to the dashboard; keep in step with build_parser().
 SUBCOMMANDS = frozenset({
     "dashboard", "record", "vod", "snapshot", "transcribe", "doctor", "sessions",
-    "republish", "edit", "calibrate",
+    "republish",
 })
 
 
@@ -136,24 +136,6 @@ def build_parser() -> argparse.ArgumentParser:
     republish.add_argument("session_id", nargs="?",
                            help="one session; omit to rebuild every session")
 
-    edit = sub.add_parser(
-        "edit",
-        help="build the edited cut for one chunk, or every complete chunk")
-    edit.add_argument("session_id", nargs="?",
-                      help="one session; omit to do every session")
-    edit.add_argument("--chunk", default="", help="one chunk label, e.g. c000")
-    edit.add_argument("--dry-run", action="store_true",
-                      help="plan and report without encoding anything")
-
-    calibrate = sub.add_parser(
-        "calibrate",
-        help="show how much each noise threshold would remove from some media")
-    calibrate.add_argument("path", type=Path, help="a master, or any media file")
-    calibrate.add_argument("--start", type=float, default=0.0,
-                           help="seconds into the file to sample from")
-    calibrate.add_argument("--seconds", type=float, default=300.0,
-                           help="how much to sample (default 300)")
-
     sub.add_parser("doctor", help="check the environment")
     sub.add_parser("sessions", help="list known sessions")
 
@@ -195,10 +177,6 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_republish(config, args)
         if command == "transcribe":
             return cmd_transcribe(config, args)
-        if command == "edit":
-            return cmd_edit(config, args)
-        if command == "calibrate":
-            return cmd_calibrate(config, args)
         if command == "sessions":
             return cmd_sessions(config)
     except KeyboardInterrupt:
@@ -667,187 +645,4 @@ def cmd_sessions(config: Config) -> int:
                       for chunk in session.chunks), default=0.0)
         print(f"{session.session_id:<34} {session.channel:<18} {session.status:<12} "
               f"{len(session.chunks):>6}  {fmt_clock(length)}")
-    return 0
-
-
-def _cli_edit_options(config: Config):
-    from .edit import EditOptions
-    get = config.get
-    return EditOptions(
-        remove_silence=bool(get("edit.remove_silence", True)),
-        noise_floor_db=float(get("edit.noise_floor_db", -41.0)),
-        min_silence_seconds=float(get("edit.min_silence_seconds", 0.2)),
-        min_speech_seconds=float(get("edit.min_speech_seconds", 0.2)),
-        margin_seconds=float(get("edit.margin_seconds", 0.2)),
-        min_cut_seconds=float(get("edit.min_cut_seconds", 0.25)),
-        fillers=str(get("edit.fillers", "sounds")),
-        repeats=str(get("edit.repeats", "restarts")),
-        censor=str(get("edit.censor", "mute")),
-        censor_margin_seconds=float(get("edit.censor_margin_seconds", 0.05)),
-        max_removed_fraction=float(get("edit.max_removed_fraction", 0.75)),
-    )
-
-
-def cmd_edit(config: Config, args) -> int:
-    """Build the edited cut for stored chunks, outside the running pipeline.
-
-    Deliberately usable on a session recorded weeks ago: the inputs are the
-    master and the stored words, both of which are kept, so a cut can be rebuilt
-    with different settings at any time without going near Deepgram again.
-    """
-    from . import media
-    from .edit import EditRefused, describe
-    from .render import publish_edit, render_edit
-    from .state import SessionStore
-    from .transcribe import RollingTranscriber
-    from .transcript import load_words
-
-    tools = resolve_tools(
-        {k: v for k, v in (config.get("tools") or {}).items() if v},
-        need=("ffmpeg", "ffprobe"))
-    store = SessionStore(config.masters_root)
-    store.load_from_disk()
-    sessions = store.all()
-    if args.session_id:
-        sessions = [s for s in sessions if s.session_id == args.session_id]
-        if not sessions:
-            print(f"no session {args.session_id} under {config.masters_root}")
-            return 1
-
-    transcriber = RollingTranscriber(config, tools, store)
-    options = _cli_edit_options(config)
-    encoder = media.probe_encoder(tools, str(config.get("edit.encoder", "auto")))
-    built = skipped = failed = 0
-
-    for session in sessions:
-        for chunk in session.chunks:
-            if args.chunk and chunk.label != args.chunk:
-                continue
-            master = session.path / "master" / chunk.master_name
-            if not chunk.master_name or not master.exists():
-                skipped += 1
-                continue
-            directory = transcriber.output_dir(session, chunk)
-            try:
-                words, meta = load_words(directory / "words.json")
-            except Exception:
-                skipped += 1
-                continue
-            if not meta.get("complete"):
-                skipped += 1
-                continue
-
-            folder = safe_name_component(
-                str(config.get("edit.folder_name", "Edited")),
-                what="edit.folder_name")
-            suffix = str(config.get("edit.suffix", "_Edited"))
-            destination = master.parent / folder / f"{master.stem}{suffix}.mp4"
-            work = config.work_root / f"editcli_{session.session_id}_{chunk.label}"
-            try:
-                result = render_edit(
-                    tools, master, destination, words, options,
-                    work_dir=work, censor=transcriber.censor(),
-                    encoder=encoder,
-                    quality=int(config.get("edit.quality", 22)),
-                    audio_bitrate=str(config.get("edit.audio_bitrate", "192k")),
-                    crossfade_seconds=float(
-                        config.get("edit.crossfade_ms", 20)) / 1000.0,
-                    mute_ramp_seconds=float(
-                        config.get("edit.mute_ramp_ms", 10)) / 1000.0,
-                    session_offset=float(chunk.session_offset),
-                    plan_only=bool(args.dry_run),
-                )
-            except EditRefused as exc:
-                print(f"  {session.session_id}/{chunk.label}: {exc}")
-                skipped += 1
-                continue
-            except Exception as exc:
-                print(f"  {session.session_id}/{chunk.label}: {exc}")
-                failed += 1
-                continue
-
-            print(f"  {session.session_id}/{chunk.label}: {describe(result.plan)}")
-            if args.dry_run:
-                # The report is the whole point of a dry run: it is what makes a
-                # setting change reviewable before half an hour of encoding
-                # rather than after it.
-                atomic_write_text(directory / "edit.md", result.report)
-            else:
-                # The same publish the pipeline job uses. Writing the media
-                # without it would leave an edit the running pipeline cannot
-                # recognise and would rebuild on its next start.
-                publish_edit(
-                    directory, result,
-                    generation=meta.get("generation") or "",
-                    language=str(meta.get("language") or "en"),
-                    censor=transcriber.censor(),
-                    meta={"channel": session.channel,
-                          "session_id": session.session_id,
-                          "chunk": chunk.label,
-                          "session_offset": chunk.session_offset})
-            built += 1
-
-    verb = "planned" if args.dry_run else "built"
-    print(f"{verb} {built} edited cut(s); {skipped} skipped, {failed} failed")
-    return 1 if failed else 0
-
-
-def cmd_calibrate(config: Config, args) -> int:
-    """Answer "is -41 dB right for this recording?" with numbers.
-
-    The noise floor is the one edit setting with no obviously correct value, so
-    rather than asking the operator to guess and then re-render two hours of
-    video, this measures a sample and prints what each candidate would remove.
-    """
-    from . import media
-    from .edit import silence_spans
-    from .util import fmt_clock
-
-    tools = resolve_tools(
-        {k: v for k, v in (config.get("tools") or {}).items() if v},
-        need=("ffmpeg", "ffprobe"))
-    if not args.path.is_file():
-        print(f"no such file: {args.path}")
-        return 1
-
-    work = config.work_root / "calibrate"
-    work.mkdir(parents=True, exist_ok=True)
-    sample = work / "sample.wav"
-    try:
-        result = run([tools.ffmpeg, "-hide_banner", "-loglevel", "error",
-                      "-nostdin", "-y", "-ss", f"{max(0.0, args.start):.3f}",
-                      "-t", f"{max(1.0, args.seconds):.3f}",
-                      "-i", str(args.path), "-vn", "-ac", "2", "-ar", "48000",
-                      "-c:a", "pcm_s16le", str(sample)], timeout=1800)
-        if result.returncode != 0 or not sample.exists():
-            print(f"could not read audio: {result.stderr.strip()[-400:]}")
-            return 1
-        levels, hop = media.audio_envelope(tools, sample)
-    finally:
-        sample.unlink(missing_ok=True)
-
-    span = len(levels) * hop
-    ordered = sorted(levels)
-    percentiles = "  ".join(
-        f"p{p}={ordered[min(len(ordered) - 1, int(len(ordered) * p / 100))]:.0f}dB"
-        for p in (5, 25, 50, 75, 95))
-    print(f"{args.path.name}: {fmt_clock(span)} sampled from "
-          f"{fmt_clock(args.start)}")
-    print(f"  loudness percentiles: {percentiles}")
-
-    minimum = float(config.get("edit.min_silence_seconds", 0.2))
-    configured = float(config.get("edit.noise_floor_db", -41.0))
-    print("")
-    print("  threshold   silence found   share")
-    for threshold in (-25.0, -30.0, -35.0, -41.0, -47.0, -55.0, -65.0):
-        spans = silence_spans(levels, hop, threshold, minimum)
-        total = sum(b - a for a, b in spans)
-        mark = "  <- edit.noise_floor_db" if abs(
-            threshold - configured) < 0.5 else ""
-        print(f"  {threshold:>7.0f} dB   {fmt_clock(total):>12}   "
-              f"{100 * total / max(span, 1e-9):5.1f}%{mark}")
-    print("")
-    print("  Speech is loud or near-silent with little in between, so "
-          "neighbouring")
-    print("  thresholds usually agree. Pick one from the flat part of the table.")
     return 0

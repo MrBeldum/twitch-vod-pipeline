@@ -1,19 +1,15 @@
 {
   "_comment": "Copy to config.json and fill in. Every key is optional: anything absent falls back to the defaults in vodpipe/config.py. You can also set secrets in the dashboard instead of here, or via the DEEPGRAM_API_KEY / TWITCH_OAUTH_TOKEN / ANTHROPIC_API_KEY environment variables. network.proxy is an optional HTTP/SOCKS proxy (e.g. socks5://127.0.0.1:1080) used for live capture, VOD download and live-status probes -- set it to reach Twitch and record source quality from a region it has left, such as South Korea, without a full VPN.",
-
   "secrets": {
     "deepgram_api_key": "",
     "twitch_oauth_token": "",
     "anthropic_api_key": ""
   },
-
   "channels": [],
-
   "paths": {
     "masters_root": "C:\\Users\\Daniel\\Desktop\\twitch-vods",
     "censor_master_list": "C:\\Users\\Daniel\\Desktop\\censored_words_master.txt"
   },
-
   "recording": {
     "chunk_seconds": 7200,
     "quality": "best",
@@ -21,61 +17,40 @@
     "hard_reserve_gb": 10,
     "keep_ts_after_remux": false
   },
-
   "proxies": {
     "enabled": true,
     "height": 540,
     "encoder": "auto",
     "retention_days": 1
   },
-
   "transcription": {
     "enabled": true,
     "model": "nova-3",
     "language": "en",
     "filler_words": true,
+    "keep_raw_responses": true,
     "slice_seconds": 300,
     "stitch_chunk_boundaries": true,
     "seam_seconds": 6.0
   },
-
-  "edit": {
-    "enabled": true,
-    "remove_silence": true,
-    "noise_floor_db": -41.0,
-    "min_silence_seconds": 0.2,
-    "min_speech_seconds": 0.2,
-    "margin_seconds": 0.2,
-    "fillers": "sounds",
-    "repeats": "restarts",
-    "censor": "mute",
-    "crossfade_ms": 20,
-    "quality": 22,
-    "encoder": "auto"
-  },
-
   "snapshots": {
     "max_concurrent": 2,
     "max_per_session": 1
   },
-
   "summary": {
     "enabled": true,
     "provider": "claude-cli",
     "model": "claude-sonnet-5",
     "max_tokens": 8000
   },
-
   "watcher": {
     "enabled": true,
     "check_seconds": 60,
     "probe_timeout_seconds": 25
   },
-
   "network": {
     "proxy": ""
   },
-
   "dashboard": {
     "port": 8420
   }

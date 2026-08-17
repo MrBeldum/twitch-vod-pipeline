@@ -370,13 +370,6 @@ def atomic_write_json(path: Path, value: Any, *, mode: int | None = None) -> Non
         path, json.dumps(value, indent=2, ensure_ascii=False) + "\n", mode=mode)
 
 
-def read_json(path: Path, default: Any = None) -> Any:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return default
-
-
 def ensure_within(root: Path, candidate: Path) -> Path:
     """Resolve `candidate` and prove it sits inside `root`.
 
@@ -416,17 +409,6 @@ def free_bytes(path: Path) -> int:
     while not probe.exists() and probe.parent != probe:
         probe = probe.parent
     return shutil.disk_usage(probe).free
-
-
-def dir_size(path: Path) -> int:
-    total = 0
-    for root, _, files in os.walk(path):
-        for name in files:
-            try:
-                total += (Path(root) / name).stat().st_size
-            except OSError:
-                pass
-    return total
 
 
 # ------------------------------------------------------------------------ strings

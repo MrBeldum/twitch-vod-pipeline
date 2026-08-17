@@ -164,12 +164,19 @@ class ChunkTableTests(unittest.TestCase):
         self.assertEqual(cells, len(self.headers()),
                          f"{cells} cells against {self.headers()}")
 
-    def test_the_edited_cut_has_a_column_of_its_own(self):
-        """It is a separate artifact with a separate status, like the proxy."""
-        self.assertIn("Edit", self.headers())
-        self.assertIn("chunk.edit_status", self.row())
-
     def test_every_artifact_status_the_state_model_carries_is_shown(self):
-        for field in ("status", "proxy_status", "transcript_status",
-                      "summary_status", "edit_status"):
+        """Read from the state model rather than a list written out here, so
+        adding an artifact and forgetting the column is a failing test."""
+        from vodpipe.state import Chunk
+
+        shown = {field for field in vars(Chunk(index=0, session_id="s",
+                                              channel="c", started_at=0.0))
+                 if field.endswith("_status") or field == "status"}
+        for field in sorted(shown):
             self.assertIn(f"chunk.{field}", self.row(), field)
+
+    def test_the_retired_edit_column_is_gone(self):
+        """This build records and transcribes; it does not cut. A column for an
+        artifact nothing produces would sit at `pending` forever."""
+        self.assertNotIn("Edit", self.headers())
+        self.assertNotIn("edit_status", self.row())

@@ -3,8 +3,14 @@
 Records Twitch streams live in configurable chunks (default 2h) — or downloads a past VOD
 through the identical pipeline — writes Premiere-ready masters + proxies, and after each
 chunk emits an objective `.md` rundown plus a Premiere-importable transcript for text-based
-editing. Also supports pulling a segment out mid-stream without waiting for the chunk to
-finish, and routing all Twitch traffic through an HTTP/SOCKS proxy.
+editing, SRT captions, a censor list, the Deepgram word stream everything derives from, and
+the provider's verbatim responses beside it. Also supports pulling a segment out mid-stream
+without waiting for the chunk to finish, and routing all Twitch traffic through an
+HTTP/SOCKS proxy.
+
+**It records and transcribes; it does not cut.** The automatic edited cut was built and
+then retracted on 2026-08-17 at the user's request — see the note below, and the
+`v1-ai-edit` branch, which carries it along with the model-decided variant.
 
 Status: **built, audited, hardened, and proven against real 8-hour recordings.** Two audits
 were worked through (neither document is retained in this tree; `tests/test_audit_20260814.py`
@@ -44,27 +50,53 @@ the user's call, and the right one; see the `tags` note below. `IMPORT.md` was d
 the same pass as bloat. Together this removed two modules (`fillers.py`, `review.py`,
 ~1,400 lines), a job type, seven config keys and three published files per chunk.
 
-**The edited cut, 2026-08-17.** The user then asked for the pipeline to do the editing
-itself — "no silences, repeats, filler, and censored" — with the explicit condition that
-cuts must not be sudden or clip words. That is `edit.py` (what to remove), `audio.py`
-(sample-exact assembly, crossfades, mutes), `render.py` (plan → encode → mux) and an
-`edit` job on `media_jobs`. It is not a re-run of the cancelled feature: Premiere's tag
-was cancelled because we could neither control nor see the cut, and this controls the
-boundary, blends across it, and writes `edit.md` listing every decision with a timecode.
+**The edited cut: built, then retracted, 2026-08-17.** The user asked for the pipeline to
+do the editing itself, and then — having seen it work — asked for it to be taken back out
+and for the tool to be the recorder and transcriber it started as. Both are the right call
+and neither cancels the other:
 
-Every threshold was measured against the 7-hour reference recording before being chosen,
-because the failure mode that matters here is a confident wrong cut:
+- it *worked*. On the reference chunk it took 58:52 to 46:15, clipped none of its 8,022
+  words, and its 478 joins measured quieter than ordinary speech (median single-sample
+  step 3 of ±32,768 against 1,188). The verification is what made the decision possible;
+- and it was still the wrong deliverable. An automatic cut has to be checked, and checking
+  a 46-minute file means watching it. What it saved — finding the dead air — is not the
+  part of editing that is slow, and it cost forty minutes of encoding and several GB per
+  chunk for a derivative one generation removed from a stream copy.
 
-| Signal | Measurement | Decision |
-|---|---|---|
-| loudness | bimodal: p25 −72 dB, p50 −30 dB; −35 dB→21.0%, −41 dB→19.8%, −50 dB→19.0% | the threshold is a setting, not a ritual; `vodpipe calibrate` prints the table |
-| acoustic cuts alone | clipped 37 of 701 words, worst 230 ms | the transcript veto (`_cover_words`) |
-| adjacent identical words | 825 pairs; 147 of the 185 deliberate ones are punctuated ("No. No.", "money, money, money"), stutters are not and sit at a 0.000 s gap | punctuation + a 0.150 s gap bound → 640 cut, 0 false positives in a 25-sample review |
-| phrase restarts | 144 ("I can I can", "that could be that could be") | removed in the `restarts` tier |
-| repeated *numbers* | 4, and all four were figures: "fifty fifty" (a 50/50 split), "twenty twenty eight" (a year), "ten ten thousand", "one one point" | never cut — dropping a copy changes the fact, not the phrasing. A capitalisation test for proper nouns was measured and **rejected**: it blocked 12 correct cuts to prevent 2 questionable ones and missed the case that prompted it |
-| vocalisations | 257 "uh", 121 "um", 125 s total; "mhmm" (27) and "uh-huh" (7) also present | `sounds` tier removes the first, never the backchannels — those are answers |
-| discourse markers | "like" 456/916 parenthetical, "you know" 166/262, "I mean" 71/112; "so"/"actually"/"basically" only 3–6%, all sentence-initial | `smart` tier covers the first three only, and only mid-clause |
-| clicks at the joins | on the finished 46-minute cut, the worst single-sample step at each of the 478 joins: median **3** of ±32,768, p95 2,144, max 3,824 — against median **1,188**, p95 2,434, max 10,296 for the same measurement in ordinary speech | the 20 ms equal-power crossfade works; the seven joins that stand out against their own near-silent surroundings were each checked and are rising waveforms, not discontinuities |
+The work is not lost: **`edit.py`, `audio.py`, `render.py` and the model-decided
+`aiedit.py` live on the `v1-ai-edit` branch**, with their tests and their measurements.
+`main` is the core pipeline.
+
+**What the retraction had to get right** is the part worth reading before removing
+anything else from this codebase. Two readers here are deliberately strict, and both would
+have turned "delete the feature" into "the application will not start on the machine that
+had it":
+
+- `schema._walk` raises on an unknown config path. The `edit.*` keys are in the user's
+  installed `config.json`. Retiring the **section** (`"edit"` in `RETIRED_PATHS`) rather
+  than its thirty keys individually is what works — `_walk` only recurses into a branch
+  that still has a rule underneath it, so once the last `edit.*` rule went the *container*
+  became unknown and retiring the keys one by one did not help. Retiring the section also
+  covers the model branch's keys, which this build never knew.
+- `state._known_fields` raises on an unknown manifest field, and `edit_status`/
+  `edit_error`/`edit_name` are in every `session.json` written while the feature existed.
+  `_RETIRED_CHUNK_FIELDS` keeps them *accepted* and drops them on load, so they validate
+  today and are gone from the file after the next save. `errors` needed the same treatment
+  via `_RETIRED_ERRORS`.
+
+Neither had a test before; `tests/test_retirement.py` is that test, and it is the one to
+extend the next time something is removed.
+
+**Also added in the same pass: the verbatim Deepgram archive**
+(`transcription.keep_raw_responses`, default on, `transcripts/<chunk>/deepgram/NNNN.json`).
+`words.json` is the *normalised* stream — sorted, de-overlapped, same-start collisions
+resolved by dropping one of the pair — which is what every export derives from and is
+deliberately not what the provider said. The archive answers the question the normalised
+file cannot: *did we lose that word, or was it never there?* It hangs off an `on_response`
+hook on `DeepgramProvider` and a thread-local destination on the transcriber (one provider
+instance is shared across the job pool, so a plain attribute would misfile responses).
+**Archiving can never fail a transcription that succeeded** — the hook is wrapped, logged
+and swallowed, because an archive is a convenience and a transcript is not.
 
 **Two features were added 2026-08-15 (see the notes below and README):** downloading past
 Twitch VODs through the same chunk/remux/proxy/transcript/rundown pipeline as live, and a
@@ -223,96 +255,22 @@ Implementation notes worth knowing before changing anything:
   was wrong — Adobe's language list is a *closed enum* and the schema is
   `additionalProperties: false`, so `zh-cn`/`fi-fi`/`uk-ua`/`en-au` were not unfamiliar
   tags but invalid files.
-- **The edited cut is where filler removal actually happens** (`edit.py`, `audio.py`,
-  `render.py`). *Added 2026-08-17, on the user's request, and not a reversal of the note
-  below:* Premiere's `filler` tag stays dead because Premiere ignored it and because
-  *delete all fillers* cuts on word boundaries with no review. What replaced it is our
-  own cut, where we control the boundary, the crossfade and the audit trail. The two
-  design rules:
-  - **Acoustics propose, the transcript vetoes.** Silence is measured from the audio
-    (`astats` RMS envelope at a 10 ms hop) because the transcript cannot see it — Deepgram
-    pads each word to abut its neighbour, and the median gap between one word's end and
-    the next word's start is 0.000s across the 60,693-word reference recording. But the
-    acoustics alone clipped **37 of 701 words** on a 5-minute sample, worst case 230 ms,
-    for the same reason: a padded word reaches into audio that really is silent. So every
-    keep range is grown until it fully contains each word it touches (`_cover_words`).
-    That removed all 37 and cost 1.1 points of running time (20.5% → 19.4%). **Never
-    make a cut decision from the transcript's gaps, and never let one land inside a word.**
-  - **A word-derived cut edge may only grow outward, into a gap.** `_snap_removal` looks
-    for the quietest instant near a boundary, bounded by the neighbouring words' own
-    edges. It cannot shrink and it cannot cross a word: a stop consonant is quieter than
-    the room, so an unbounded energy search walks straight into the next word. Where the
-    words genuinely abut there is no gap and the cut stays where the transcript put it.
-- **Audio and video are cut by different mechanisms, and only the arithmetic keeps them
-  together.** Video is `select`'d frame-wise by ffmpeg; audio is assembled sample-wise in
-  Python. If both were measured independently the roundings would disagree at every join,
-  and over the ~950 cuts a measured 2-hour chunk produces the error random-walks into
-  ~0.25 s.
-  They agree because each segment's sample count is *derived from* its frame count
-  (`audio.segments_for`), never measured. Verified against a synthetic source with a flash
-  and a beep on every second: the A/V spread was 19.3 ms — pure measurement quantisation —
-  and **identical at 21 cuts and at 113**. Also verified end to end by re-transcribing the
-  edited audio of a real chunk: Deepgram heard exactly the 244 words the remap predicted,
-  median offset −20 ms. Two things this depends on: `setpts=PTS-STARTPTS` before the rate
-  normalisation, so frame 0 is time 0; and the video/audio `start_time` delta (0.034 vs
-  0.044 on the reference masters — 10 ms, 480 samples), which must be applied to the PCM
-  read or the whole track sits half a frame out.
-- **The edit plan is built on the audio and applied to the video, and the two streams of
-  a real capture do not end together.** *Found by the first full-length render, 2026-08-17.*
-  c003's audio runs **1.03 s past its video** (3533.51 s against 3532.48 s), so the tail of
-  the plan asked `select` for 14 frames that were never recorded; the encoder produced 12
-  fewer frames than the audio had been cut for, which would have put the whole track out of
-  step from that point back. `edit_stream_geometry` now returns the real frame count,
-  `render_edit` clamps the planning duration to `video_frames / fps`, and `segments_for`
-  takes a `max_frames` ceiling. Note the *other* reference chunk has the opposite skew
-  (video 7200.867 s, audio 7200.832 s), which is why this never showed up on c000 and why a
-  test fixture would not have caught it either. **The post-encode `frames != total_frames`
-  check is what turned this into a refused job rather than a shipped file that drifts —
-  do not relax it.**
-- **The transcript is remapped against the ranges that were *rendered*, and clamped into
-  them.** *Found by the acceptance check on the first full-length render, 2026-08-17.*
-  Two separate bugs, one after the other, and the second was caused by fixing the first:
-  - Remapping against `plan.keep` uses float boundaries the encoder never saw. Every one
-    is rounded to a frame, and `remap_words` places a word by the cumulative length of
-    everything before it, so those roundings random-walk — ~0.2 s of transcript drift by
-    the end of a chunk with 478 cuts. Use `first / fps, (last + 1) / fps` from the frame
-    ranges; they sum to exactly the output's duration, so there is nothing to accumulate.
-  - But a frame-locked range *starts up to one frame later* than the boundary the planner
-    chose, and the planner puts boundaries exactly on word starts (`_cover_words`).
-    `word.start - range_start` then goes negative and the word lands *before* its own
-    range, overlapping the last word of the previous one — 48 of c003's 8,022 words, by
-    2–10 ms, one frame at 60 fps. So a word is clamped into its range's extent, and the
-    **endpoints** are rounded with the duration derived from them: rounding a start and a
-    duration separately lets their sum cross the next word's rounded start, and rounding
-    is monotonic only if you round both ends of the span.
-  The failure was silent at the point of damage. `write_exports` wrote the file happily
-  and `load_words` refused it, so the edit was finished, correct, and had a `words.json`
-  nothing could read — including `_edit_generation`, which reads it to decide whether to
-  spend another forty-minute encode, and would therefore have rebuilt that chunk on every
-  start forever. **`words_json_text` now runs its own output through `words_from_json`
-  before returning it**, so the single funnel every `words.json` goes through cannot emit
-  one this codebase cannot read. Refusing costs one publish and leaves the previous
-  outputs alone; writing it costs the file.
-- **The `select` expression is a balanced search tree, not a sum of `between()` terms.**
-  A flat expression is O(n) per frame: ~950 ranges × 432,000 frames is 400 million
-  evaluations before a macroblock is encoded. The tree is O(log n). It goes in a file via
-  `-filter_script:v` because it runs to tens of kilobytes, far past a Windows command line.
-- **An edit is queued only once its seam is settled** (`_seam_settled`). Boundary repair
-  rewrites a chunk's tail when its *successor's* transcript completes, so cutting earlier
-  spends a forty-minute encode to be redone for one word at the join. The gate costs at
-  most one chunk of latency on a live recording. `recut()` — the manual path — ignores it
-  deliberately, and deletes the existing file first so a rebuild actually rebuilds rather
-  than adopting the file the operator asked to replace.
-- **Plan before encoding, and refuse before encoding.** `render_edit` decodes audio,
-  measures, plans, and only then touches video. A misconfigured threshold or a silent
-  track produces an absurd plan; finding that out after half an hour of h264 is the
-  difference between a warning and a wasted evening. `EditRefused` is recorded as
-  `skipped`, not `error`, so recovery does not retry an encode that cannot succeed.
-- **`array('h').extend(bytes)` appends one sample per byte.** It pads to twice the length
-  asked for, and the audio then no longer matches the frame count it was derived from —
-  which is the one thing `audio.py` exists to guarantee. Use a list of ints. Caught by
-  `test_reading_past_the_end_pads_rather_than_truncating`; there is no other symptom until
-  a chunk whose last segment runs past EOF desyncs.
+- **The edited cut's implementation notes moved with it, to `v1-ai-edit`.** Everything
+  learned building it is in that branch's `CLAUDE.md`: the acoustics-propose/transcript-
+  vetoes rule, the outward-only snap, deriving audio sample counts from video frame
+  counts, clamping the plan to the frames that exist, the balanced `select` tree, the
+  disk estimator anchored on the master's own size. If the cut is ever revived, read
+  those before touching anything — most of them were paid for with a real failure.
+  Two of its lessons stayed here because they are not about editing:
+  - **`words_json_text` validates its own output before returning it.** The remap that
+    fed the edited transcript produced words that stepped backwards by one video frame,
+    and `write_exports` wrote a `words.json` that `load_words` then refused. A writer and
+    a reader that disagree produce a file nothing downstream can use, and the damage is
+    silent at the point it happens.
+  - **Check any new disk estimator against a real file before believing it.** This
+    codebase has modelled a reservation wrongly twice — 319 GB for a 538 MB proxy, then
+    82 GB for a 13 GB edit. A reservation the drive cannot meet does not protect the
+    disk, it turns the feature off.
 - **`profanity` is the only `tags` value we emit. Filler tagging is removed — do not
   reinstate it.** *2026-08-17, on the user's report.* Adobe's enum allows `profanity` and
   `filler`; we wrote both, and the user's Premiere reported **"no filler words detected"**
@@ -375,8 +333,8 @@ Implementation notes worth knowing before changing anything:
 | 7 | Channels | **Arbitrary, user-added at runtime. Do not hardcode any channel.** User said "various streamers, don't assume which." |
 | 8 | Storage | Masters → Desktop, kept until manually cleared. Proxies → auto-deleted after 1 day. All adjustable. |
 | 9 | Language | Python for new code. The retired C# predecessor is archived privately at `github.com/MrBeldum/vod-transcript`. |
-| 10 | Automatic editing | **Dead air and disfluency only.** The edited cut removes silence, filler sounds and false starts and mutes censored words. It makes **no judgement about content** — that is decision #5 again, and the reason the edit is safe to trust. It is a derivative: the master is never modified. |
-| 11 | Filler removal | **Ours, not Premiere's.** Adobe's `filler` tag is not emitted (Premiere ignored it). Fillers are cut by `edit.py`, where the boundary, the crossfade and the audit trail are under our control. |
+| 10 | Automatic editing | **None.** Built 2026-08-17 and retracted the same day at the user's request: it worked, and it was still the wrong deliverable — an automatic cut has to be checked, and checking it means watching it. `main` records and transcribes. The cut lives on `v1-ai-edit`. |
+| 11 | Filler removal | **Manual, from a verbatim transcript.** Adobe's `filler` tag is not emitted (Premiere ignored it), and nothing here removes fillers from the media. `transcription.filler_words` stays on so every one is in the transcript and easy to find. |
 
 ---
 
@@ -484,16 +442,6 @@ These three are exactly what made it too slow, and cloud word timings make all o
   for headroom. That is ~8 GB for the same chunk, still 7× the real output. Under-reserving
   is the recoverable direction — `make_proxy` stages a `.partial.mp4` and cleans it up, so
   a full drive costs one failed encode, whereas over-reserving costs every proxy.
-- **An edit costs disk and an encode.** ~40 min of h264_amf and ~8 GB per 2-hour 1080p60
-  chunk, on top of the master and the proxy. Peak disk while it runs is ~13 GB: the source
-  PCM (1.4 GB), the edited PCM (~1.2 GB), the rendered video-only file and the muxed
-  output. **`estimate_edit_peak_bytes` is anchored on the master's own file size, not a
-  bits-per-pixel model.** The edit is a re-encode of that exact footage at that exact
-  resolution, so the master predicts the output far better than a pixel count can — the
-  first version used the bpp model and asked for **82 GB** to build that 13 GB chunk,
-  which is the 319 GB proxy mistake all over again. *A reservation the drive cannot meet
-  does not protect the disk, it turns the feature off.* This codebase has now made that
-  error twice; check any new estimator against a real file before believing it.
 - **Chunk boundaries must land on keyframes**, and words straddling a boundary need
   handling so the transcript doesn't lose or duplicate them.
 - **Transcribe rolling, not after.** Outputs should land ~1 minute after a chunk closes,

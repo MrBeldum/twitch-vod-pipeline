@@ -19,7 +19,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from .transcript import Word, normalise
 from .util import LOG
@@ -89,6 +89,7 @@ class DeepgramProvider:
         filler_words: bool = True,
         max_retries: int = 4,
         timeout: float = 600.0,
+        on_response: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         if not api_key:
             raise AuthError("no Deepgram API key configured")
@@ -98,6 +99,13 @@ class DeepgramProvider:
         self.filler_words = filler_words
         self.max_retries = max(1, max_retries)
         self.timeout = timeout
+        # Called with the provider's own answer, before we make anything of it.
+        # Everything else in this pipeline is derived from that answer, so
+        # keeping it is the only way to check a derivation afterwards -- or to
+        # rebuild against a future reading of the same response without paying
+        # for the audio again. Set by the transcriber when
+        # `transcription.keep_raw_responses` is on.
+        self.on_response = on_response
 
     def _url(self) -> str:
         params = {
@@ -129,6 +137,14 @@ class DeepgramProvider:
             attempts = attempt + 1
             try:
                 response = self._post(payload, deadline=deadline)
+                if self.on_response is not None:
+                    # Before parsing, and never allowed to fail the request: an
+                    # archive is a convenience and a transcription that
+                    # succeeded must not be lost to a full disk.
+                    try:
+                        self.on_response(response)
+                    except Exception:       # noqa: BLE001 - archiving is optional
+                        LOG.exception("could not archive the Deepgram response")
                 return parse_deepgram(
                     response, expected_duration=expected_duration)
             except (_RetryableHTTPError, urllib.error.URLError, TimeoutError) as exc:
@@ -383,12 +399,14 @@ def parse_deepgram(response: dict[str, Any], *,
     return normalise(words)
 
 
-def build_provider(config, secret: str) -> ASRProvider:
+def build_provider(config, secret: str, *,
+                   on_response: Callable[[dict[str, Any]], None] | None = None) -> ASRProvider:
     name = (config.get("transcription.provider") or "deepgram").lower()
     if name != "deepgram":
         raise TranscriptionError(f"unknown transcription provider: {name}")
     return DeepgramProvider(
         secret,
+        on_response=on_response,
         model=config.get("transcription.model", "nova-3"),
         language=config.get("transcription.language", "en"),
         filler_words=bool(config.get("transcription.filler_words", True)),

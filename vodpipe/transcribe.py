@@ -14,9 +14,10 @@ import secrets
 import shutil
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Iterator, Sequence
 
 from .asr import (
     ASRProvider,
@@ -152,7 +153,55 @@ class RollingTranscriber:
         # replacement commits. This identifies the one call that must begin from
         # an empty word stream even though the old words remain readable.
         self._fresh_rebuilds: set[Path] = set()
+        # Where the *next* raw provider response should be archived, per thread.
+        # It has to be thread-local: one provider instance is shared across the
+        # job pool, so a plain attribute would file a response under whichever
+        # chunk happened to set it last.
+        self._archive = threading.local()
         self._reconcile_interrupted_publications()
+
+    # -- the provider's own answer -----------------------------------------
+
+    @contextmanager
+    def archiving_to(self, directory: Path | None) -> Iterator[None]:
+        """Keep the verbatim responses for this stretch of work.
+
+        `words.json` is the *normalised* stream -- sorted, de-overlapped, and
+        with same-start collisions resolved -- which is what everything
+        downstream needs and is not quite what the provider said. This keeps
+        what it actually said, so a derivation can be checked afterwards, or
+        re-read differently, without paying for the audio again.
+        """
+        previous = getattr(self._archive, "directory", None)
+        self._archive.directory = directory
+        try:
+            yield
+        finally:
+            self._archive.directory = previous
+
+    def _response_sink(self):
+        """The archiver, or `None` when the setting is off.
+
+        Returning `None` rather than a no-op keeps the provider's hot path
+        exactly as it was for anyone who does not want this.
+        """
+        if not self.config.get("transcription.keep_raw_responses", True):
+            return None
+        return self._archive_response
+
+    def _archive_response(self, payload: dict) -> None:
+        directory = getattr(self._archive, "directory", None)
+        if directory is None:
+            return
+        directory.mkdir(parents=True, exist_ok=True)
+        # Numbered by what is already there rather than by a counter, so a
+        # resumed or re-run chunk appends instead of overwriting.
+        index = len(list(directory.glob("*.json"))) + 1
+        path = directory / f"{index:04d}.json"
+        temp = path.with_suffix(".json.tmp")
+        temp.write_text(json.dumps(payload, ensure_ascii=False),
+                        encoding="utf-8")
+        temp.replace(path)
 
     # -- collaborators -----------------------------------------------------
 
@@ -280,7 +329,9 @@ class RollingTranscriber:
         with self._provider_lock:
             if self._provider is None or identity != self._provider_key:
                 if semantic == self._semantic_identity():
-                    provider = build_provider(self.config, str(identity[0]))
+                    provider = build_provider(
+                        self.config, str(identity[0]),
+                        on_response=self._response_sink())
                 elif str(semantic["provider"]).lower() == "deepgram":
                     # One-shot's explicit language and frozen rolling generations
                     # must reach the provider, not only their output metadata.
@@ -291,6 +342,13 @@ class RollingTranscriber:
                         filler_words=bool(semantic["filler_words"]),
                         max_retries=int(identity[5]),
                         timeout=float(identity[6]),
+                        # This branch needs the archiver as much as the other
+                        # one. Omitting it here kept the raw responses for a
+                        # chunk whose identity matched the config and silently
+                        # dropped them for a one-shot or for a chunk pinned to
+                        # an older generation -- an archive with holes nothing
+                        # reports is worse than no archive.
+                        on_response=self._response_sink(),
                     )
                 else:
                     raise TranscriptionError(
@@ -550,8 +608,10 @@ class RollingTranscriber:
                                 expected=expected, detail=detail)
                         return AdvanceResult(
                             IDLE, covered_through=cursor, detail=detail)
-                    words = transcribe_audio(
-                        self.provider(semantic), audio, extracted)
+                    with self.archiving_to(
+                            self.output_dir(session, chunk) / "deepgram"):
+                        words = transcribe_audio(
+                            self.provider(semantic), audio, extracted)
                 finally:
                     audio.unlink(missing_ok=True)
 
@@ -906,9 +966,11 @@ class RollingTranscriber:
                         f"{previous.label}/{chunk.label} joined boundary audio "
                         "was empty")
                 return False
-            seam_words = transcribe_audio(
-                self.provider(previous_semantic), seam_audio,
-                submitted_duration)
+            with self.archiving_to(
+                    self.output_dir(session, chunk) / "deepgram"):
+                seam_words = transcribe_audio(
+                    self.provider(previous_semantic), seam_audio,
+                    submitted_duration)
         except TranscriptionError as exc:
             if strict:
                 raise
@@ -1073,8 +1135,9 @@ class RollingTranscriber:
                         raise RuntimeError(
                             f"audio extraction made no progress beyond "
                             f"{cursor:.3f}s of {duration:.3f}s")
-                    part = transcribe_audio(
-                        self.provider(semantic), audio, extracted)
+                    with self.archiving_to(output_dir / "deepgram"):
+                        part = transcribe_audio(
+                            self.provider(semantic), audio, extracted)
                 finally:
                     audio.unlink(missing_ok=True)
                 words = merge_streams(words, [w.shifted(start) for w in part], start)

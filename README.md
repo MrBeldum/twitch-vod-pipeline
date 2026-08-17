@@ -1,12 +1,25 @@
 # Twitch VOD → Premiere Pipeline
 
 Records Twitch streams live in chunks — or downloads a past VOD through the identical
-pipeline — writes Premiere-ready masters and proxies, and publishes a word-timed transcript
-plus an objective rundown for each chunk. It then cuts a **second, edited copy** with the
-silences, filler sounds and false starts removed and censored words muted, and a matching
-transcript so you can keep editing from text. You can also pull any range out of a broadcast
-while it is still recording, and route everything through an HTTP/SOCKS proxy to reach Twitch
-from a region it has left (such as South Korea).
+pipeline — and hands you everything you need to start editing:
+
+- a **Premiere-ready master**, stream-copied from the broadcast so nothing is re-encoded;
+- its **proxy**, named so Premiere's *Attach Proxies* finds it;
+- a **Static Transcript JSON** with per-word timings, which is what turns on text-based
+  editing;
+- an objective **rundown** of what happened, so you know where to start;
+- the **Deepgram word stream** the rest is derived from, and the **verbatim API responses**
+  beside it;
+- **SRT** captions and a plain-text transcript;
+- a **censor list** of the terms from your master list that actually occur.
+
+You can also pull any range out of a broadcast while it is still recording, and route
+everything through an HTTP/SOCKS proxy to reach Twitch from a region it has left (such as
+South Korea).
+
+It records and it transcribes. **It does not cut**: no automatic edit, no decisions made
+on your behalf about what to remove. What it gives you is a clean master and a transcript
+good enough to cut from.
 
 Pure Python 3.14 standard library — no pip install, no virtualenv, no wheels to build.
 External binaries only: `ffmpeg`, `ffprobe`, `streamlink`, and optionally `claude`.
@@ -35,9 +48,7 @@ vodpipe.cmd vod 123456789 --start 1:30:00 --duration 45:00   # just part of it
 vodpipe.cmd sessions
 vodpipe.cmd snapshot <session-id> --last 10
 vodpipe.cmd transcribe "C:\path\to\any.mp4"
-vodpipe.cmd edit <session-id> --dry-run   # what the edited cut would remove
-vodpipe.cmd edit <session-id>             # build it
-vodpipe.cmd calibrate "C:\path\to\a_master.mp4"   # pick the noise threshold
+vodpipe.cmd republish <session-id>        # rebuild exports from the stored words
 ```
 
 ---
@@ -50,8 +61,6 @@ Desktop\twitch-vods\<channel>\<session-id>\
     <channel>_<session>_c000.mp4          ← the untouched recording
     Proxies\
       <channel>_<session>_c000_Proxy.mp4  ← auto-deleted after 1 day
-    Edited\
-      <channel>_<session>_c000_Edited.mp4 ← silences, fillers and repeats cut out
   snapshots\
     <channel>_<session>_snap_..._001432.mp4
     snapshots.json
@@ -62,11 +71,10 @@ Desktop\twitch-vods\<channel>\<session-id>\
       transcript.txt       ← timestamped plain text
       transcript.json      ← segments + words, for anything else you build
       censor-words.txt     ← the terms from your master list that actually occur
-      words.json           ← raw accumulated word stream (internal)
+      words.json           ← the Deepgram word stream everything else derives from
       rundown.md           ← objective rundown
-      edit.md              ← every cut the edited file made, with timecodes
-      edited\              ← the same export set, for the edited file
-        premiere.json  transcript.srt  transcript.txt  words.json
+      deepgram\            ← the provider's verbatim responses, one file per request
+        0001.json  0002.json  ...
   live\                    ← working .ts files, removed once remuxed
   logs\
   session.json             ← machine-readable state
@@ -165,7 +173,7 @@ lands where you expect. Select one and delete it like any other word.
 > wrong shape for this footage anyway: it cuts on word boundaries, which is audible on
 > a hesitation that runs into the next word, and one wrong call in a thousand silently
 > removes real speech. Filler *removal* is a manual edit; the transcript's job is to
-> make each one easy to find.
+> make each one easy to find, which a verbatim transcript does.
 
 Turn `transcription.filler_words` off if you would rather have clean reading copy than a
 verbatim transcript. That one is a Deepgram request parameter, so changing it does
@@ -176,108 +184,54 @@ transcript file drives it. Open `censor-words.txt`, copy the terms, and paste th
 Text panel → Transcript → Filter → **Censored words**. The file only lists terms from
 your master list that were actually spoken in that chunk, so it stays short.
 
-If you would rather not do any of that by hand, the edited cut below has it done
-already.
-
 ---
 
-## The edited cut
+## What you get, and what you do with it
 
-Beside every master, in `master/Edited/`, the pipeline writes a second file with the
-dead air taken out:
+Everything below lands per chunk, in `transcripts/<chunk>/`. Nothing here is a judgement
+about your footage — that is the point.
 
-- **silences removed** — anything quieter than `edit.noise_floor_db` for longer than
-  `edit.min_silence_seconds`, keeping `edit.margin_seconds` of air either side;
-- **filler sounds removed** — "uh", "um", "er";
-- **repeats and false starts removed** — "the the", "I can I can", "that could be that
-  could be";
-- **censored words muted** — the audio is silenced in place; the picture, the timing and
-  the transcript are untouched, because muting a word you did not want to hear is a
-  smaller intervention than cutting a hole in the timeline;
-- **a matching transcript** in `transcripts/c000/edited/`, so text-based editing works
-  on the cut file too;
-- **`edit.md`** listing every decision with a timecode.
+| File | What it is | What it is for |
+|---|---|---|
+| `premiere.json` | Adobe Static Transcript, per-word timings | import it and text-based editing works |
+| `words.json` | the Deepgram word stream, normalised | every other file is derived from this one; `republish` rebuilds them all from it without touching Deepgram |
+| `deepgram/NNNN.json` | the provider's answers, verbatim | what was actually said back, before we made anything of it |
+| `rundown.md` | an objective account of the chunk | read it first and you know where to start |
+| `transcript.srt` | captions | subtitles, or an import into anything that reads SRT |
+| `transcript.txt` | timestamped plain text | searching, quoting, skimming |
+| `transcript.json` | segments and words | for anything you build yourself |
+| `censor-words.txt` | terms from your master list that actually occur | paste into Premiere's censored-words filter |
+| `exports.json` | which generation these files describe | lets the pipeline tell a stale export set from a current one |
 
-Measured on the reference recording — a seven-hour HasanAbi broadcast, four chunks:
+### Why both `words.json` and `deepgram/`
 
-| chunk | source | edited | removed | cuts |
-|---|---|---|---|---|
-| c000 | 2:00:00 | 1:39:29 | 17.1% | 955 |
-| c001 | 2:00:00 | 1:42:34 | 14.5% | 942 |
-| c002 | 2:00:00 | 1:41:01 | 15.8% | 953 |
-| c003 | 0:58:53 | 0:46:16 | 21.4% | 478 |
+`words.json` is the stream everything else is built on, and it is *normalised*: sorted,
+de-overlapped, and with same-start collisions resolved by dropping one of the pair.
+Downstream that is exactly what you want — but it means the file is not quite what
+Deepgram said.
 
-**6h59m of recording became 5h49m.** Most of that is silence; fillers and repeats
-together are a couple of minutes per chunk. Budget roughly forty minutes of background
-encoding per two-hour chunk.
+`deepgram/` keeps what Deepgram said, one file per request, before anything was made of
+it. It answers the question the normalised file cannot: *did we lose that word, or was it
+never there?* It also lets a future reading of the same responses be built without paying
+for the audio again. About 15 KB per request, so roughly 1.5 MB for a two-hour chunk;
+turn it off with `transcription.keep_raw_responses` if you would rather not have it.
 
-> **The master is never modified.** The edit is a derivative, like a proxy. If a cut is
-> wrong, change the setting and re-run it; nothing you disagree with is permanent.
+### There is no automatic edit
 
-### Why it does not cut a word in half
+An earlier version of this tool cut a second copy of every chunk with the silences,
+fillers and false starts removed. It worked — measured on a real chunk it took 58:52 down
+to 46:15, it never clipped a word, and its joins did not click. It was **removed on the
+operator's decision**, and the reasoning is worth keeping:
 
-Silence is measured from the audio, because the transcript cannot see it: Deepgram pads
-each word so it abuts its neighbour, and across 60,693 reference words the median gap
-between one word ending and the next starting is **0.000s**. Transcript gaps carry
-almost no information about where the speaker actually stopped.
+- an automatic cut has to be *checked*, and checking a 46-minute file means watching it;
+- the cost is real and permanent — forty minutes of encoding and several gigabytes per
+  chunk, for a derivative one generation removed from a stream copy;
+- and the thing it saves you is the easy part. Finding the dead air is not what makes
+  editing slow.
 
-The consequence is that the audio and the transcript disagree about where a word ends,
-and on a five-minute sample the acoustic cuts alone clipped **37 of 701 words**, the
-worst by 230 ms. So the two are used for different jobs: **acoustics propose a cut, and
-the transcript vetoes it.** Every keep range is grown until it fully contains any word it
-touches. That removed all 37 clips and cost 1.1 percentage points of running time.
-
-Cuts are also blended rather than butted: `edit.crossfade_ms` of equal-power crossfade at
-every join, taken from the material that would have followed the outgoing side, so a cut
-cannot click. Mutes ramp in and out inside their margin for the same reason.
-
-Measured on the finished 46-minute cut, a click would show as a step discontinuity — one
-sample to the next jumping further than the waveform around it ever does. Across all 478
-joins the largest such step has a median of **3** on a ±32,768 scale, against **1,188** for
-the same measurement in ordinary speech, and no join produces a step larger than ordinary
-speech already does. The handful that stand out against their own near-silent surroundings
-are rising waveforms — someone starting to talk — not discontinuities.
-
-### The noise threshold
-
-`vodpipe calibrate <file>` prints what each threshold would actually remove:
-
-```
-  threshold   silence found   share
-      -35 dB       00:01:15    25.3%
-      -41 dB       00:01:09    23.0%  <- edit.noise_floor_db
-      -47 dB       00:01:05    21.8%
-```
-
-Speech is either loud or near-silent with very little in between — p25 of the reference
-recording is −72 dB and p50 is −30 dB — so the exact number matters much less than it
-looks. Anything from about −35 to −50 dB gives the same answer to within two percentage
-points. Pick one from the flat part of the table. `edit.md` repeats this per chunk.
-
-### Rebuilding one
-
-Nothing about an edit needs Deepgram again — the words are already stored — so it is
-cheap to re-run with different settings:
-
-```
-python -m vodpipe edit <session-id> --chunk c000            # rebuild one
-python -m vodpipe edit <session-id> --dry-run               # plan only, writes edit.md
-```
-
-or press **Re-cut** on the chunk in the dashboard. A chunk is cut automatically once its
-transcript is complete *and* its chunk boundary has been repaired, which happens when the
-next chunk finishes — waiting for that costs at most one chunk of latency and saves a
-whole re-encode per chunk.
-
-### What it will not do
-
-It does not judge content. It removes dead air and disfluency, and that is all; it has no
-opinion about what is interesting, which is the same settled decision that keeps the
-rundown objective. If a plan would remove more than `edit.max_removed_fraction` of a
-chunk the edit is refused rather than rendered, because that is a wrong threshold or a
-silent track rather than an editorial result.
-
----
+What survives is the part that was actually useful: a **verbatim** transcript, with the
+hesitations in it, timed to the word, so a cut you make lands where you expect it to.
+If you want the automatic cut back, it lives on the `v1-ai-edit` branch.
 
 ## How it works, and why
 
@@ -547,6 +501,13 @@ is in `vodpipe/config.py`.
 Secrets resolve config first, then environment (`DEEPGRAM_API_KEY`, `TWITCH_OAUTH_TOKEN`,
 `ANTHROPIC_API_KEY`), so a shell export works too.
 
+The validator is total and transactional — a rejected save changes nothing — and it is
+strict about unknown keys, so a typo is refused rather than silently ignored. The one
+exception is a *retired* key: `edit.*` settings written by the build that had the
+automatic cut are dropped on load rather than refused, so switching to this build does
+not leave you with an application that will not start on its own settings file. They are
+gone from the file after the next save.
+
 ---
 
 ## Tests
@@ -582,8 +543,8 @@ and no network access are needed anywhere in the suite.
 | `test_transcript.py`, `test_exports.py` | Transcript model, censor matching, Premiere exports |
 | `test_vod.py` | VOD URL parsing, download-command shape, source provenance, and an end-to-end VOD run through the full pipeline |
 | `test_network_proxy.py`, `test_arming.py` | Proxy validation and streamlink wiring for live capture, VODs and live probes |
-| `test_edit.py` | What the edited cut removes and never removes; the arithmetic that keeps its audio and video from drifting apart; PCM assembly, crossfades and mutes |
-| `test_edit_pipeline.py` | Edit scheduling, the seam gate, adoption, staleness, manual re-cut, refusals |
+| `test_retirement.py` | That a `config.json` and a `session.json` written by the build that had the edited cut still load here, and that the retired names disappear on the next save |
+| `test_raw_responses.py` | The verbatim Deepgram archive, and that a failure to write it can never lose a transcription that succeeded |
 | `test_premiere_schema.py` | Every export validated against Adobe's own checked-in schema file, reading its enums rather than paraphrasing them |
 | `test_live_failures_20260816.py` | Regressions for the seven defects the first two live recordings found — capture stream mapping, coverage tolerances, proxy disk reservation, lock scope, rundown retry |
 | `test_closed_findings_20260815.py` | Regressions for the audit/product findings closed 2026-08-15 |
@@ -600,9 +561,6 @@ and no network access are needed anywhere in the suite.
 | `vodpipe/transcribe.py` | rolling slice scheduling, chunk-boundary repair, publishing |
 | `vodpipe/transcript.py` | word model, pause segmentation, slice and chunk seams, censor matching |
 | `vodpipe/exports.py` | Static Transcript JSON, SRT, text, censor list |
-| `vodpipe/edit.py` | what the edited cut removes and why — pure, no I/O |
-| `vodpipe/audio.py` | sample-exact PCM assembly, crossfades and mutes |
-| `vodpipe/render.py` | running an edit plan: encode, assemble, mux, verify |
 | `vodpipe/asr.py` | Deepgram client |
 | `vodpipe/summarize.py` | the rundown prompt |
 | `vodpipe/models.py` | `claude -p` and Anthropic API transports, with retry and truncation checks |
@@ -648,9 +606,8 @@ What happens when things go wrong, since a recorder is judged on its bad days:
 - **A transcript that could not be read back is never written.** `words.json` is checked
   against its own reader before it is serialised, so a publish that would produce a file
   nothing can load fails instead — leaving the previous outputs in place. A file that
-  will not load is worse than a failed publish: recovery, `retranscribe` and the edited
-  cut's freshness check all read it, and the last of those would otherwise re-encode the
-  same chunk on every start.
+  will not load is worse than a failed publish: recovery and `retranscribe` both read it, and
+  neither can do anything with a file that will not parse.
 - **A rundown does not outlive the transcript it describes.** If the transcript no longer
   has enough speech to summarise, the stale `rundown.md` goes with it. Turning summaries
   off does not delete work already done — that is a different thing entirely.
@@ -688,18 +645,11 @@ What happens when things go wrong, since a recorder is judged on its bad days:
   editing for a `??-??` transcript — that is preferable to claiming English speech that
   is not English.
 - Fillers are transcribed but never tagged, so Premiere's *delete all fillers* finds
-  nothing. That is deliberate; see the Premiere section — the edited cut removes them
-  instead.
-- The edited cut is a re-encode, so it costs roughly forty minutes and ~8 GB per 2-hour
-  1080p60 chunk and is one generation removed from the stream copy. Turn `edit.enabled`
-  off if you only want masters.
-- The edited cut makes **hard cuts on the picture**. That is what removing dead air looks
-  like; only the audio is blended. There are no dissolves and no B-roll — it is a tightened
-  version of the recording, not a produced video.
-- It removes dead air and disfluency and nothing else. It has no opinion about which parts
-  of a broadcast are worth keeping, by design.
-- No proxy is generated for the edited file. Attach the master's proxy to the master; the
-  edited file has different timings and needs its own if you want one.
+  nothing. Premiere ignored the tags when they were written; see the Premiere section.
+- **Nothing is cut for you.** No silence removal, no filler removal, no censoring of the
+  media — the censor list is a list, and Premiere does the censoring. This build
+  produces a master and the material to edit it with, and stops there. The automatic
+  cut lives on the `v1-ai-edit` branch if you want it.
 - The rundown is only as good as the transcript. Crosstalk, music and heavy accents all
   degrade it, and the prompt instructs the model to say so rather than guess.
 - `claude -p` shares your subscription usage limits.
