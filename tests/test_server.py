@@ -449,7 +449,9 @@ class ServerTests(unittest.TestCase):
         session = self.add_session("artifact-list")
         output = session.path / "transcripts" / "c000"
         output.mkdir(parents=True)
-        (output / "transcript.txt").write_text("known output", encoding="utf-8")
+        (output / "source").mkdir(parents=True, exist_ok=True)
+        (output / "source" / "transcript.txt").write_text(
+            "known output", encoding="utf-8")
         (output / "private.txt").write_text("not an output", encoding="utf-8")
         (session.path / "notes.md").write_text("private note", encoding="utf-8")
 
@@ -457,7 +459,8 @@ class ServerTests(unittest.TestCase):
             f"/api/outputs?session_id={session.session_id}")
         self.assertEqual(status, 200)
         files = [item for group in payload["groups"] for item in group["files"]]
-        self.assertEqual([item["name"] for item in files], ["transcript.txt"])
+        self.assertEqual([item["name"] for item in files],
+                         ["source/transcript.txt"])
         artifact = files[0]
         self.assertIn("artifact_id", artifact)
         self.assertNotIn("path", artifact)
@@ -483,7 +486,8 @@ class ServerTests(unittest.TestCase):
         session = self.add_session("artifact-symlink")
         output = session.path / "transcripts" / "c000"
         output.mkdir(parents=True)
-        artifact_path = output / "transcript.txt"
+        (output / "source").mkdir(parents=True, exist_ok=True)
+        artifact_path = output / "source" / "transcript.txt"
         artifact_path.write_text("safe", encoding="utf-8")
         _, payload = json_request(
             f"/api/outputs?session_id={session.session_id}")
@@ -509,7 +513,9 @@ class ServerTests(unittest.TestCase):
         session = self.add_session("artifact-junction")
         outside = self.tmp / "outside-junction"
         outside.mkdir()
-        (outside / "transcript.txt").write_text("secret", encoding="utf-8")
+        (outside / "source").mkdir()
+        (outside / "source" / "transcript.txt").write_text(
+            "secret", encoding="utf-8")
         output = session.path / "transcripts" / "c000"
         output.parent.mkdir(parents=True)
         created = subprocess.run(
@@ -523,7 +529,7 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(status, 200)
             names = [item["name"] for group in payload["groups"]
                      for item in group["files"]]
-            self.assertNotIn("transcript.txt", names)
+            self.assertNotIn("source/transcript.txt", names)
         finally:
             output.rmdir()
 

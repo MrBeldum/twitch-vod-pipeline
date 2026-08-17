@@ -149,7 +149,7 @@ class RecoveryArtifactTests(PipelineFixture):
         chunk = self.chunk(proxy_status=ERROR, transcript_status=ERROR,
                            summary_status=ERROR)
         output = self.pipeline.transcriber.output_dir(self.session, chunk)
-        save_words(output / "words.json", [Word("hello", 0.0, 0.5, 0.9)], {
+        save_words(output / "source" / "words.json", [Word("hello", 0.0, 0.5, 0.9)], {
             "complete": True, "covered_seconds": 10.0,
             "expected_seconds": 10.0,
         })
@@ -205,18 +205,22 @@ class RecoveryArtifactTests(PipelineFixture):
     def test_previous_complete_generation_is_restored_after_crash(self):
         chunk = self.chunk(transcript_status=ERROR)
         output = self.pipeline.transcriber.output_dir(self.session, chunk)
-        stash = output / "words.json.previous"
+        # The stash and its backup follow `words_path`, so they live under
+        # `source/` too -- a rebuild in progress is not something the chunk
+        # folder should show. Backup entries are named chunk-relative, which is
+        # what lets a restore put each file back where it came from.
+        stash = output / "source" / "words.json.previous"
         save_words(stash, [Word("old", 0.0, 0.4, 0.9)], {
             "complete": True, "covered_seconds": 10.0,
             "expected_seconds": 10.0,
         })
-        backup = output / "generation.previous"
-        backup.mkdir()
-        shutil.copyfile(stash, backup / "words.json")
+        backup = output / "source" / "generation.previous"
+        (backup / "source").mkdir(parents=True)
+        shutil.copyfile(stash, backup / "source" / "words.json")
 
         actions = self.pipeline._recover_words_stash(self.session, chunk)
 
-        words, meta = load_words(output / "words.json")
+        words, meta = load_words(output / "source" / "words.json")
         self.assertEqual([word.text for word in words], ["old"])
         self.assertTrue(meta["complete"])
         self.assertFalse(stash.exists())
@@ -239,14 +243,14 @@ class RecoveryArtifactTests(PipelineFixture):
     def test_corrupt_export_manifest_is_republished_from_words(self):
         chunk = self.chunk(transcript_status=ERROR)
         output = self.publish_complete(chunk)
-        (output / MANIFEST_NAME).write_text("{broken", encoding="utf-8")
+        (output / "source" / MANIFEST_NAME).write_text("{broken", encoding="utf-8")
 
         actions = self.pipeline._recover_artifacts(
             self.session, chunk, RecordingOwner())
 
         manifest = json.loads(
-            (output / MANIFEST_NAME).read_text(encoding="utf-8"))
-        words, meta = load_words(output / "words.json")
+            (output / "source" / MANIFEST_NAME).read_text(encoding="utf-8"))
+        words, meta = load_words(output / "source" / "words.json")
         self.assertEqual(manifest["generation"], meta["generation"])
         self.assertEqual(manifest["word_count"], len(words))
         self.assertIn("repaired transcript export generation", actions)
@@ -254,7 +258,7 @@ class RecoveryArtifactTests(PipelineFixture):
     def test_mismatched_manifest_generation_is_republished_from_words(self):
         chunk = self.chunk(transcript_status=ERROR)
         output = self.publish_complete(chunk)
-        path = output / MANIFEST_NAME
+        path = output / "source" / MANIFEST_NAME
         manifest = json.loads(path.read_text(encoding="utf-8"))
         manifest["generation"] = "0" * 16
         path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -262,7 +266,7 @@ class RecoveryArtifactTests(PipelineFixture):
         actions = self.pipeline._recover_artifacts(
             self.session, chunk, RecordingOwner())
 
-        _, meta = load_words(output / "words.json")
+        _, meta = load_words(output / "source" / "words.json")
         repaired = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(repaired["generation"], meta["generation"])
         self.assertIn("repaired transcript export generation", actions)
@@ -270,14 +274,14 @@ class RecoveryArtifactTests(PipelineFixture):
     def test_valid_manifest_allows_correctly_absent_optional_files(self):
         chunk = self.chunk(transcript_status=ERROR)
         output = self.publish_complete(chunk)
-        manifest_before = (output / MANIFEST_NAME).read_bytes()
+        manifest_before = (output / "source" / MANIFEST_NAME).read_bytes()
 
         with patch.object(self.pipeline.transcriber, "republish") as republish:
             actions = self.pipeline._recover_artifacts(
                 self.session, chunk, RecordingOwner())
 
         republish.assert_not_called()
-        self.assertEqual((output / MANIFEST_NAME).read_bytes(), manifest_before)
+        self.assertEqual((output / "source" / MANIFEST_NAME).read_bytes(), manifest_before)
         self.assertNotIn("repaired transcript export generation", actions)
 
     def test_a_bare_rundown_is_not_adopted_as_a_transcript(self):

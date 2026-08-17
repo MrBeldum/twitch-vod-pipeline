@@ -57,29 +57,42 @@ vodpipe.cmd republish <session-id>        # rebuild exports from the stored word
 
 ```
 Desktop\twitch-vods\<channel>\<session-id>\
-  master\
+  index.md                 ← start here: what to open, in the order you open it
+  master\                  ← import this folder into Premiere
     <channel>_<session>_c000.mp4          ← the untouched recording
     Proxies\
       <channel>_<session>_c000_Proxy.mp4  ← auto-deleted after 1 day
+  transcripts\
+    c000\                  ← only the four things you actually open
+      rundown.md           ← objective rundown: read this first
+      premiere.json        ← Static Transcript, enables text-based editing
+      transcript.srt       ← captions
+      censor-words.txt     ← terms from your master list that actually occur
+      source\              ← what the pipeline reads and you rarely do
+        words.json         ← the word stream every export is rebuilt from
+        transcript.json    ← segments + words, for anything you build yourself
+        transcript.txt     ← timestamped plain text
+        exports.json       ← which generation the files beside it belong to
+        deepgram\          ← the provider's verbatim responses, one per request
+          0001.json  0002.json  ...
   snapshots\
     <channel>_<session>_snap_..._001432.mp4
     snapshots.json
-  transcripts\
-    c000\
-      premiere.json        ← Static Transcript, enables text-based editing
-      transcript.srt       ← captions
-      transcript.txt       ← timestamped plain text
-      transcript.json      ← segments + words, for anything else you build
-      censor-words.txt     ← the terms from your master list that actually occur
-      words.json           ← the Deepgram word stream everything else derives from
-      rundown.md           ← objective rundown
-      deepgram\            ← the provider's verbatim responses, one file per request
-        0001.json  0002.json  ...
   live\                    ← working .ts files, removed once remuxed
   logs\
   session.json             ← machine-readable state
-  index.md                 ← human-readable map of the session
 ```
+
+**The split is by how often you open a file, not by what kind of file it is.** A
+folder is browsed, not searched, so everything sitting in a chunk folder competes
+for attention with `premiere.json` — the one file that has to be easy to find. The
+four at the top are the ones an edit actually starts from; `source/` holds the
+plumbing, which is there so a transcript can be rebuilt or checked, not so you can
+read it.
+
+Both halves are written by a single transaction, so they can never disagree: a
+crash mid-publish cannot leave a `premiere.json` describing words that
+`source/words.json` no longer contains.
 
 Masters stay until you delete them. Proxies self-clean after `proxies.retention_days`.
 
@@ -191,17 +204,27 @@ your master list that were actually spoken in that chunk, so it stays short.
 Everything below lands per chunk, in `transcripts/<chunk>/`. Nothing here is a judgement
 about your footage — that is the point.
 
+**In the chunk folder — the four you open:**
+
 | File | What it is | What it is for |
 |---|---|---|
+| `rundown.md` | an objective account of the chunk | read it first and you know where to start |
 | `premiere.json` | Adobe Static Transcript, per-word timings | import it and text-based editing works |
+| `transcript.srt` | captions | subtitles, or an import into anything that reads SRT |
+| `censor-words.txt` | terms from your master list that actually occur | paste into Premiere's censored-words filter |
+
+**In `source/` — what the pipeline reads:**
+
+| File | What it is | What it is for |
+|---|---|---|
 | `words.json` | the Deepgram word stream, normalised | every other file is derived from this one; `republish` rebuilds them all from it without touching Deepgram |
 | `deepgram/NNNN.json` | the provider's answers, verbatim | what was actually said back, before we made anything of it |
-| `rundown.md` | an objective account of the chunk | read it first and you know where to start |
-| `transcript.srt` | captions | subtitles, or an import into anything that reads SRT |
 | `transcript.txt` | timestamped plain text | searching, quoting, skimming |
 | `transcript.json` | segments and words | for anything you build yourself |
-| `censor-words.txt` | terms from your master list that actually occur | paste into Premiere's censored-words filter |
 | `exports.json` | which generation these files describe | lets the pipeline tell a stale export set from a current one |
+
+You never have to go into `source/` to edit. It is there so a transcript can be rebuilt,
+checked against what the provider actually returned, or read a different way later.
 
 ### Why both `words.json` and `deepgram/`
 

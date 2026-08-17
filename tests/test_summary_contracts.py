@@ -103,7 +103,7 @@ class SummaryFixture(unittest.TestCase):
             word_count=len(words),
             transcribed_through=chunk.duration if complete else 5.0,
         )
-        _, meta = load_words(output / "words.json")
+        _, meta = load_words(output / "source" / "words.json")
         return str(meta["generation"])
 
     def rundown(self, chunk: Chunk, generation: str, body: str = "# Rundown") -> Path:

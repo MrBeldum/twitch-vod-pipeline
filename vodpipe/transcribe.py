@@ -27,7 +27,13 @@ from .asr import (
     transcribe_audio,
 )
 from .config import Config
-from .exports import GENERATION_FILES, write_export_sets, write_exports
+from .exports import (
+    GENERATION_FILES,
+    SOURCE_DIR,
+    split_publication,
+    write_export_sets,
+    write_exports,
+)
 from .media import (
     concat_audio,
     extract_audio_slice,
@@ -395,7 +401,11 @@ class RollingTranscriber:
         return session.path / "transcripts" / chunk.label
 
     def words_path(self, session: Session, chunk: Chunk) -> Path:
-        return self.output_dir(session, chunk) / "words.json"
+        return self.output_dir(session, chunk) / SOURCE_DIR / "words.json"
+
+    def archive_dir(self, session: Session, chunk: Chunk) -> Path:
+        """Where the provider's verbatim responses are kept for this chunk."""
+        return self.output_dir(session, chunk) / SOURCE_DIR / "deepgram"
 
     def source_for(self, session: Session, chunk: Chunk) -> Path | None:
         """The best readable media for this chunk right now.
@@ -609,7 +619,7 @@ class RollingTranscriber:
                         return AdvanceResult(
                             IDLE, covered_through=cursor, detail=detail)
                     with self.archiving_to(
-                            self.output_dir(session, chunk) / "deepgram"):
+                            self.archive_dir(session, chunk)):
                         words = transcribe_audio(
                             self.provider(semantic), audio, extracted)
                 finally:
@@ -795,13 +805,20 @@ class RollingTranscriber:
         stash = path.with_name(path.name + ".previous")
         stash.unlink(missing_ok=True)
         shutil.copyfile(path, stash)
+        # The backup mirrors the published layout, so a name like
+        # `source/words.json` round-trips to the same place it came from. It
+        # lives under `source/` itself: a rebuild that fails is not something the
+        # chunk folder should show, and that folder is now only what you open.
         backup = stash.with_name("generation.previous")
         shutil.rmtree(backup, ignore_errors=True)
         backup.mkdir()
+        directory = self.output_dir(session, chunk)
         for name in GENERATION_FILES:
-            current = path.parent / name
+            current = directory / name
             if current.exists():
-                shutil.copyfile(current, backup / name)
+                target = backup / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(current, target)
         self._fresh_rebuilds.add(path)
         return stash
 
@@ -823,7 +840,8 @@ class RollingTranscriber:
             for name in GENERATION_FILES
             if (backup / name).exists()
         }
-        publish_text_sets([(path.parent, rendered, GENERATION_FILES)])
+        publish_text_sets(
+            split_publication(self.output_dir(session, chunk), rendered))
         words, meta = load_words(path)
         self.store.update_chunk(
             session, chunk,
@@ -967,7 +985,7 @@ class RollingTranscriber:
                         "was empty")
                 return False
             with self.archiving_to(
-                    self.output_dir(session, chunk) / "deepgram"):
+                    self.archive_dir(session, chunk)):
                 seam_words = transcribe_audio(
                     self.provider(previous_semantic), seam_audio,
                     submitted_duration)
@@ -1135,7 +1153,7 @@ class RollingTranscriber:
                         raise RuntimeError(
                             f"audio extraction made no progress beyond "
                             f"{cursor:.3f}s of {duration:.3f}s")
-                    with self.archiving_to(output_dir / "deepgram"):
+                    with self.archiving_to(output_dir / SOURCE_DIR / "deepgram"):
                         part = transcribe_audio(
                             self.provider(semantic), audio, extracted)
                 finally:

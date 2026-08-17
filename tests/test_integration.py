@@ -356,7 +356,8 @@ class RollingTranscriptionTests(unittest.TestCase):
         session, chunk, transcriber, _ = self._fixture()
         transcriber.finalize(session, chunk)
         directory = self.session_dir / "transcripts" / "c000"
-        for name in ("words.json", "premiere.json", "transcript.srt", "transcript.txt"):
+        for name in ("premiere.json", "transcript.srt",
+                     "source/words.json", "source/transcript.txt"):
             self.assertTrue((directory / name).exists(), name)
         payload = json.loads((directory / "premiere.json").read_text(encoding="utf-8"))
         self.assertTrue(payload["segments"])

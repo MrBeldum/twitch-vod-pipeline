@@ -3,8 +3,8 @@
 Records Twitch streams live in configurable chunks (default 2h) — or downloads a past VOD
 through the identical pipeline — writes Premiere-ready masters + proxies, and after each
 chunk emits an objective `.md` rundown plus a Premiere-importable transcript for text-based
-editing, SRT captions, a censor list, the Deepgram word stream everything derives from, and
-the provider's verbatim responses beside it. Also supports pulling a segment out mid-stream
+editing, SRT captions, a censor list, and — one level down in `source/` — the Deepgram word
+stream everything derives from and the provider's verbatim responses beside it. Also supports pulling a segment out mid-stream
 without waiting for the chunk to finish, and routing all Twitch traffic through an
 HTTP/SOCKS proxy.
 
@@ -298,7 +298,58 @@ Implementation notes worth knowing before changing anything:
   installed `config.json` makes the application refuse to start — the exact failure the
   transactional validator exists to prevent. Retired paths are dropped on load and gone
   from the file after the next save.
-- **Retiring a published file needs `exports.RETIRED_EXPORTS`, not just removal from
+- **A chunk folder holds only what you open; `source/` holds the rest.** *2026-08-18, at
+  the user's request for a cleaner layout.* `premiere.json`, `rundown.md`,
+  `transcript.srt` and `censor-words.txt` sit in `transcripts/<chunk>/`; `words.json`,
+  `transcript.json`, `transcript.txt`, `exports.json` and `deepgram/` sit in
+  `transcripts/<chunk>/source/`. The split is by *how often a person opens the file*, not
+  by kind — a folder is browsed rather than searched, so everything in it competes for
+  attention with the one file that has to be found.
+
+  **A generation still spans both halves and is still committed by one transaction.**
+  That is the part not to break. Two designs were considered and one was rejected:
+  - *rejected*: let an owned name carry a path (`source/words.json`) inside a single
+    publication. `publish_text_sets` refuses that — and so does `_validated_transaction`,
+    which requires every journal name to be a bare component specifically so a corrupt or
+    crafted journal cannot steer a restore outside the transcript tree (P5/P6). Loosening
+    a security control to tidy a folder is the wrong trade;
+  - *chosen*: two publications in the same transaction, one per directory. That mechanism
+    already exists — it is how boundary stitching rewrites two chunks at once — and
+    `_validated_transaction` already allows an entry directory that is a descendant of the
+    transaction root, so nothing was relaxed. `exports.split_publication()` is the one
+    place that knows the shape; callers holding rendered bytes (the retranscribe rollback,
+    the seam's snapshot) go through it so they cannot get the ownership split wrong.
+
+  Two consequences worth knowing. The transaction now stages one level *above* the chunk
+  folder, because the two halves' common path is the chunk folder itself and a crash's
+  debris must not land in the folder the user opens. And the flat names are in
+  `RETIRED_EDIT_EXPORTS`, which is what makes this a *move*: a stale `words.json` beside a
+  new `source/words.json` is not clutter, it is an ambiguity about which transcript is
+  real, and recovery reaches the republish on its own because the old manifest declares
+  names that are no longer canonical.
+
+- **Known open defect: the dashboard's overload 503 is often never delivered on Windows.**
+  *Found 2026-08-18, left unfixed by decision.* `server._reject_overload` writes the JSON
+  503 and then closes the socket **without reading the request the client already sent**.
+  Windows resets a connection closed with unread inbound data, which discards the response
+  already queued for send, so the client gets `WinError 10053` instead of
+  `dashboard is busy; retry shortly`. It is a race between the RST and the client's read,
+  which is why it reproduces about three runs in five.
+
+  **`tests/test_server.py::test_handler_admission_is_bounded_and_overload_is_json` is
+  therefore an intermittently failing test that is catching something real — do not
+  "stabilise" it by loosening its assertion or its timeouts.** (Both were tried; the
+  timeouts are not the cause.) It fails the same way on commits long predating the change
+  that found it.
+
+  Not fixed because the obvious repair — drain the pending bytes before closing — runs on
+  the accept loop, so it makes rejection slower during exactly the flood the rejection
+  exists to survive. That trade is worth more thought than the bug costs: the path is only
+  reachable when every handler slot is already busy, and the cost is an error message the
+  operator does not see on a loopback-bound dashboard. If it is ever fixed, confirm the
+  mechanism first and prefer something with no accept-loop cost.
+
+- **Retiring a published file needs `exports.RETIRED_EDIT_EXPORTS`, not just removal from
   `PUBLISHED_EXPORTS`.** A publish only deletes files it *owns*, so a name simply dropped
   from the list is orphaned in every existing transcript folder forever. Retired names
   stay owned and are never rendered, which deletes them on the next publish. Recovery

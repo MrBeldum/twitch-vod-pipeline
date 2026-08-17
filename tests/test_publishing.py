@@ -71,12 +71,13 @@ class RetirementTests(unittest.TestCase):
         write_exports(self.tmp, [])
 
         # The regression: Premiere kept importing this file.
-        for name in ("premiere.json", "transcript.json", "transcript.srt",
-                     "censor-words.txt"):
+        for name in ("premiere.json", "transcript.srt", "censor-words.txt",
+                     "source/transcript.json"):
             self.assertFalse((self.tmp / name).exists(),
                              f"{name} should have been retired")
         self.assertIn("no speech",
-                      (self.tmp / "transcript.txt").read_text(encoding="utf-8"))
+                      (self.tmp / "source" / "transcript.txt")
+                      .read_text(encoding="utf-8"))
 
     def test_dropping_the_censor_list_retires_its_export(self):
         write_exports(self.tmp, sample_words(), censor=CensorList(["hello"]))
@@ -90,11 +91,27 @@ class RetirementTests(unittest.TestCase):
         write_exports(self.tmp, sample_words(), censor=CensorList(["hello"]))
         written = write_exports(self.tmp, sample_words(),
                                 censor=CensorList(["hello"]))
-        expected = {"words.json", "premiere.json", "transcript.json", "transcript.srt",
-                    "transcript.txt", "censor-words.txt"}
+        expected = {"premiere.json", "transcript.srt", "censor-words.txt",
+                    "source/words.json", "source/transcript.json",
+                    "source/transcript.txt"}
         self.assertEqual(set(written), expected)
         for name in expected:
             self.assertTrue((self.tmp / name).exists(), name)
+
+    def test_the_chunk_folder_holds_only_what_you_open(self):
+        """The whole point of the layout: four files, and none of the plumbing.
+
+        A folder is browsed, not queried, so anything sitting in it competes for
+        attention with `premiere.json` -- the one file that has to be found.
+        """
+        write_exports(self.tmp, sample_words(), censor=CensorList(["hello"]))
+        (self.tmp / "rundown.md").write_text("a rundown", encoding="utf-8")
+
+        visible = {entry.name for entry in self.tmp.iterdir()
+                   if not entry.name.startswith(".")}
+        self.assertEqual(visible, {"premiere.json", "transcript.srt",
+                                   "censor-words.txt", "rundown.md", "source"})
+        self.assertTrue((self.tmp / "source").is_dir())
 
     def test_files_this_version_retired_are_cleaned_up_by_a_publish(self):
         """A recording made before 2026-08-17 still has them beside its words.
@@ -117,10 +134,30 @@ class RetirementTests(unittest.TestCase):
     def test_unrelated_files_are_never_touched(self):
         """Only the files this module publishes are its to remove."""
         (self.tmp / "rundown.md").write_text("a rundown", encoding="utf-8")
-        (self.tmp / "words.json").write_text("{}", encoding="utf-8")
+        (self.tmp / "notes.txt").write_text("mine", encoding="utf-8")
         write_exports(self.tmp, [])
         self.assertTrue((self.tmp / "rundown.md").exists())
-        self.assertTrue((self.tmp / "words.json").exists())
+        self.assertTrue((self.tmp / "notes.txt").exists())
+
+    def test_the_flat_layout_is_moved_rather_than_duplicated(self):
+        """Until 2026-08-18 every export sat directly in the chunk folder.
+
+        Retiring those names is what makes the change a move: one publish writes
+        `source/` and deletes the old copies. Leaving them would put a second,
+        staler `premiere.json`-era transcript in every existing chunk folder --
+        and `words.json` is the file recovery rebuilds from, so two of them is
+        not clutter, it is an ambiguity about which transcript is real.
+        """
+        for stale in ("words.json", "transcript.json", "transcript.txt",
+                      "exports.json"):
+            (self.tmp / stale).write_text("{}", encoding="utf-8")
+
+        write_exports(self.tmp, sample_words())
+
+        for stale in ("words.json", "transcript.json", "transcript.txt",
+                      "exports.json"):
+            self.assertFalse((self.tmp / stale).exists(), stale)
+            self.assertTrue((self.tmp / "source" / stale).is_file(), stale)
 
 
 class GenerationTransactionTests(unittest.TestCase):
@@ -147,9 +184,47 @@ class GenerationTransactionTests(unittest.TestCase):
 
     def test_manifest_names_words_as_part_of_the_generation(self):
         manifest = read_manifest(self.tmp)
-        words = json.loads((self.tmp / "words.json").read_text(encoding="utf-8"))
-        self.assertIn("words.json", manifest["files"])
+        words = json.loads((self.tmp / "source" / "words.json").read_text(encoding="utf-8"))
+        self.assertIn("source/words.json", manifest["files"])
         self.assertEqual(words["generation"], manifest["generation"])
+
+    def test_the_two_halves_of_a_generation_commit_as_one(self):
+        """The chunk folder and `source/` are one generation, not two.
+
+        Splitting the layout put `premiere.json` and the `words.json` it was
+        rendered from in different directories. If they could commit
+        independently, a crash between them would leave Premiere importing a
+        transcript that recovery would rebuild differently -- and nothing would
+        report it, because each directory would be internally valid.
+
+        Failing the commit *after* the chunk folder has been replaced is the
+        exact interleaving that would expose it.
+        """
+        from vodpipe import transcript
+        original = transcript._replace_published_file
+        source_dir = (self.tmp / "source").resolve()
+
+        def fail_entering_source(staged, target):
+            if Path(target).resolve().parent == source_dir:
+                raise OSError("injected failure after the chunk folder committed")
+            return original(staged, target)
+
+        with patch("vodpipe.transcript._replace_published_file",
+                   side_effect=fail_entering_source):
+            with self.assertRaises(OSError):
+                write_exports(self.tmp, self.replacement())
+
+        # Not "source/ was left alone" -- the whole generation is back, including
+        # the premiere.json that had already been overwritten.
+        self.assertEqual(self.snapshot(), self.before)
+        words, meta = load_words(self.tmp / "source" / "words.json")
+        self.assertEqual([word.text for word in words], ["hello", "world"])
+        premiere = json.loads(
+            (self.tmp / "premiere.json").read_text(encoding="utf-8"))
+        spoken = [word["text"] for segment in premiere["segments"]
+                  for word in segment["words"]]
+        self.assertNotIn("replacement", spoken)
+        self.assertEqual(read_manifest(self.tmp)["generation"], meta["generation"])
 
     def test_staging_write_failure_changes_nothing(self):
         from vodpipe import transcript
@@ -228,11 +303,11 @@ class GenerationTransactionTests(unittest.TestCase):
                 if path.exists():
                     self.assertGreater(path.stat().st_size, 0, name)
             with self.assertRaises(PublicationRecoveryError):
-                load_words(self.tmp / "words.json")
+                load_words(self.tmp / "source" / "words.json")
 
         # Once space is available, the retained journal restores the exact old
         # generation rather than exposing the marker-covered mixed set.
-        load_words(self.tmp / "words.json")
+        load_words(self.tmp / "source" / "words.json")
         self.assertFalse((self.tmp / PUBLICATION_MARKER).exists())
         self.assertEqual(self.snapshot(), self.before)
 
@@ -307,11 +382,11 @@ class GenerationTransactionTests(unittest.TestCase):
             self.assertTrue((self.tmp / PUBLICATION_MARKER).exists())
             self.assertTrue((other / PUBLICATION_MARKER).exists())
             with self.assertRaises(PublicationRecoveryError):
-                load_words(self.tmp / "words.json")
+                load_words(self.tmp / "source" / "words.json")
             with self.assertRaises(PublicationRecoveryError):
-                load_words(other / "words.json")
+                load_words(other / "source" / "words.json")
 
-        load_words(other / "words.json")
+        load_words(other / "source" / "words.json")
         self.assertEqual(self.snapshot(), before[self.tmp])
         self.assertEqual(snapshot(other), before[other])
         self.assertFalse((self.tmp / PUBLICATION_MARKER).exists())
@@ -416,7 +491,7 @@ write_exports(directory, [Word("new", 0.0, 0.4, 0.9)],
             self.assertFalse(peer.is_alive(), "peer did not resume after commit")
             self.assertEqual(process.returncode, 0, stdout + stderr)
             self.assertEqual(constructor_errors, [])
-            words, _ = load_words(self.tmp / "words.json")
+            words, _ = load_words(self.tmp / "source" / "words.json")
             self.assertEqual([word.text for word in words], ["new"])
         finally:
             release.touch(exist_ok=True)
@@ -472,14 +547,14 @@ class RepublishCliTests(unittest.TestCase):
             "expected_seconds": 7200.0,
             "complete": True,
         }
-        save_words(output / "words.json",
+        save_words(output / "source" / "words.json",
                    [Word("ending", 7000.0, 0.5, 0.9)], original)
 
         result = cmd_republish(
             self.config, SimpleNamespace(session_id="sess"))
 
         self.assertEqual(result, 0)
-        words, metadata = load_words(output / "words.json")
+        words, metadata = load_words(output / "source" / "words.json")
         self.assertEqual(words[-1].end, 7000.5)
         self.assertEqual(metadata["covered_seconds"], 7200.0)
         self.assertEqual(metadata["expected_seconds"], 7200.0)
@@ -505,7 +580,7 @@ class RepublishCliTests(unittest.TestCase):
             duration=10.0, status="complete")
         session.chunks.append(chunk)
         SessionStore(self.config.masters_root).add(session)
-        save_words(session_dir / "transcripts" / "c000" / "words.json",
+        save_words(session_dir / "transcripts" / "c000" / "source" / "words.json",
                    [Word("hello", 0.0, 0.5, 0.9)], {
                        "complete": True, "covered_seconds": 10.0,
                        "expected_seconds": 10.0, "language": "en",
@@ -534,7 +609,7 @@ class RepublishCliTests(unittest.TestCase):
             master_name="chan_c000.mp4", duration=10.0, status="complete")
         session.chunks.append(chunk)
         SessionStore(self.config.masters_root).add(session)
-        save_words(session_dir / "transcripts" / "c000" / "words.json",
+        save_words(session_dir / "transcripts" / "c000" / "source" / "words.json",
                    [Word("hello", 0.0, 0.5, 0.9)], {
                        "complete": True, "covered_seconds": 10.0,
                        "expected_seconds": 10.0, "language": "en",
@@ -720,7 +795,8 @@ class RollbackTests(RollbackFixture):
 
         self.assertFalse((self.outputs / "premiere.json").exists())
         self.assertIn("no speech",
-                      (self.outputs / "transcript.txt").read_text(encoding="utf-8"))
+                      (self.outputs / "source" / "transcript.txt")
+                      .read_text(encoding="utf-8"))
 
     def test_retranscribing_a_recording_chunk_is_refused(self):
         self.chunk.status = "recording"

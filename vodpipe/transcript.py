@@ -631,6 +631,15 @@ def publish_text_sets(
 
         common = (directories[0].parent if len(directories) == 1 else
                   Path(os.path.commonpath([str(path) for path in directories])))
+        # A generation's two halves are nested -- the chunk folder and its
+        # `source/` -- so their common path is the chunk folder itself, which is
+        # the one folder that should hold nothing but what you open. Staging one
+        # level up keeps an interrupted publication's debris out of it. Sibling
+        # directories (the seam's two chunks) are unaffected: their common path
+        # is the parent already, and every entry still resolves inside the root
+        # `_validated_transaction` checks against.
+        if common in directories:
+            common = common.parent
         common.mkdir(parents=True, exist_ok=True)
         transaction = common / f".transcript-publication-{secrets.token_hex(8)}"
         transaction.mkdir()

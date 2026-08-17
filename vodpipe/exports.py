@@ -78,31 +78,75 @@ _LANGUAGE_TAG = re.compile(r"^[a-z]{2,3}(-[a-z0-9]{2,8})*$")
 # is what makes a published set self-describing rather than merely present.
 MANIFEST_NAME = "exports.json"
 
-# The complete set of files a published transcript owns. Anything in here that a
-# publish does not produce is removed, so a re-transcription cannot leave an
-# older, longer transcript behind for Premiere to import.
-PUBLISHED_EXPORTS = (
+# Where the machine-facing half of a generation lives, one level below the chunk
+# folder. The split is by *how often a person opens the file*, not by kind: the
+# chunk folder holds the four things you touch to start editing and nothing else,
+# so the one that matters -- `premiere.json` -- is not buried among files that
+# exist for recovery.
+SOURCE_DIR = "source"
+
+# What you open while editing, in the chunk folder itself, beside `rundown.md`.
+# `premiere.json` is the import that turns on text-based editing; the SRT is the
+# caption track; the censor list is pasted into Premiere's own censoring.
+EDIT_EXPORTS = (
     "premiere.json",
-    "transcript.json",
     "transcript.srt",
-    "transcript.txt",
     "censor-words.txt",
 )
 
+# What the pipeline reads and a person rarely does. `words.json` is the durable
+# source every export is rebuilt from, `exports.json` is the commit record, and
+# the other two are for whatever you build yourself. The Deepgram archive is
+# written here too, by the transcriber rather than by a publish.
+SOURCE_EXPORTS = (
+    "words.json",
+    "transcript.json",
+    "transcript.txt",
+    MANIFEST_NAME,
+)
+
+# The complete set of files a published transcript owns, chunk-relative. Anything
+# in here that a publish does not produce is removed, so a re-transcription cannot
+# leave an older, longer transcript behind for Premiere to import.
+PUBLISHED_EXPORTS = (
+    *EDIT_EXPORTS,
+    *(f"{SOURCE_DIR}/{name}" for name in SOURCE_EXPORTS if name != MANIFEST_NAME),
+)
+
 # Files earlier versions wrote beside a transcript and this one does not. They
-# stay owned so a publish deletes any left over from a recording made before
-# they were retired; nothing ever writes them again.
+# stay owned so a publish deletes any left over from a recording made before they
+# were retired; nothing ever writes them again.
 #
 # `IMPORT.md` repeated the same import instructions in every transcript folder --
 # four per session, unchanged -- where README covers them once. `fillers.md` and
 # `fillers.json` were the filler tagger's report and its review cache; Premiere
 # reads filler tags from `premiere.json` alone and never did anything with either.
-RETIRED_EXPORTS = ("IMPORT.md", "fillers.md", "fillers.json")
+#
+# The rest are the *flat* layout used until 2026-08-18, when the machine-facing
+# files moved into `source/`. Retiring them by name is what makes the move a move
+# rather than a copy: a republish writes the new location and deletes the old one,
+# and `publication_is_consistent` sees a manifest declaring names that are no
+# longer canonical, returns False, and gets recovery to do exactly that. Without
+# this every pre-move chunk folder keeps a second, staler copy of its transcript
+# forever -- and one of them is the file Premiere would import.
+RETIRED_EDIT_EXPORTS = (
+    "IMPORT.md", "fillers.md", "fillers.json",
+    "words.json", "transcript.json", "transcript.txt", MANIFEST_NAME,
+)
 
-# Every file whose presence or absence belongs to one transcript generation.
-# Rundowns are intentionally separate: they are derived later on another pool.
-GENERATION_FILES = ("words.json", *PUBLISHED_EXPORTS, MANIFEST_NAME,
-                    *RETIRED_EXPORTS)
+# Everything a publish owns in the chunk folder, and everything it owns in
+# `source/`. Passed as the `owned` set of their respective publications, which is
+# what gives the transaction the authority to delete as well as to write.
+EDIT_OWNED = (*EDIT_EXPORTS, *RETIRED_EDIT_EXPORTS)
+SOURCE_OWNED = SOURCE_EXPORTS
+
+# Every file whose presence or absence belongs to one transcript generation,
+# chunk-relative. Rundowns are intentionally separate: they are derived later on
+# another pool, from a generation that is already committed.
+GENERATION_FILES = (
+    *EDIT_OWNED,
+    *(f"{SOURCE_DIR}/{name}" for name in SOURCE_OWNED),
+)
 
 _WARNED_LANGUAGES: set[str] = set()
 
@@ -292,21 +336,56 @@ def write_exports(
 def write_export_sets(
     publications: Sequence[tuple[Path, Sequence[Word], dict[str, Any]]],
 ) -> list[list[str]]:
-    """Render and transactionally publish one or more transcript generations."""
+    """Render and transactionally publish one or more transcript generations.
+
+    A generation spans two directories -- the chunk folder and its `source/` --
+    and both halves are committed by the *same* transaction, so a crash can never
+    leave the `premiere.json` an editor imports describing different words than
+    the `words.json` recovery would rebuild it from. `publish_text_sets` already
+    supports this: it is the mechanism boundary stitching uses to rewrite two
+    chunks at once, and it needs no path-carrying file names, so the P5/P6 check
+    that every journal entry names a bare component stays exactly as strict.
+    """
     prepared: list[tuple[Path, dict[str, str], Sequence[str]]] = []
     results: list[list[str]] = []
     for directory, words, options in publications:
-        rendered, written = _render_generation(
+        edit_rendered, source_rendered, written = _render_generation(
             words,
             language=str(options.get("language", "en")),
             censor=options.get("censor"),
             meta=options.get("meta"),
             words_meta=options.get("words_meta"),
         )
-        prepared.append((directory, rendered, GENERATION_FILES))
+        prepared.append((Path(directory), edit_rendered, EDIT_OWNED))
+        prepared.append((Path(directory) / SOURCE_DIR, source_rendered,
+                          SOURCE_OWNED))
         results.append(written)
     publish_text_sets(prepared)
     return results
+
+
+def split_publication(
+    directory: Path, rendered: dict[str, str],
+) -> list[tuple[Path, dict[str, str], Sequence[str]]]:
+    """Turn one chunk-relative rendered set into its two owned publications.
+
+    Callers that already hold rendered bytes -- the retranscribe rollback and the
+    seam's snapshot -- need the same two-directory shape `write_export_sets`
+    builds, and getting the ownership split wrong in either would hand the
+    transaction the authority to delete a file it is not replacing.
+    """
+    directory = Path(directory)
+    prefix = f"{SOURCE_DIR}/"
+    return [
+        (directory,
+         {name: text for name, text in rendered.items()
+          if not name.startswith(prefix)},
+         EDIT_OWNED),
+        (directory / SOURCE_DIR,
+         {name[len(prefix):]: text for name, text in rendered.items()
+          if name.startswith(prefix)},
+         SOURCE_OWNED),
+    ]
 
 
 def _render_generation(
@@ -356,18 +435,25 @@ def _render_generation(
         if censor:
             exports["censor-words.txt"] = to_censor_list(words, censor)
 
-    written = ["words.json", *exports]
-    rendered = {
-        "words.json": words_json_text(words, persisted),
-        **exports,
-        MANIFEST_NAME: json.dumps({
-            "generation": generation,
-            "files": written,
-            "word_count": len(words),
-            "language": language,
-        }, indent=2) + "\n",
-    }
-    return rendered, written
+    # Every name below is chunk-relative, so the manifest and everything derived
+    # from it describe one generation across both of its directories.
+    edit_rendered = {name: text for name, text in exports.items()
+                     if name in EDIT_EXPORTS}
+    source_rendered = {name: text for name, text in exports.items()
+                       if name in SOURCE_EXPORTS}
+    source_rendered["words.json"] = words_json_text(words, persisted)
+
+    written = [f"{SOURCE_DIR}/words.json",
+               *(name for name in exports if name in EDIT_EXPORTS),
+               *(f"{SOURCE_DIR}/{name}" for name in exports
+                 if name in SOURCE_EXPORTS)]
+    source_rendered[MANIFEST_NAME] = json.dumps({
+        "generation": generation,
+        "files": written,
+        "word_count": len(words),
+        "language": language,
+    }, indent=2) + "\n"
+    return edit_rendered, source_rendered, written
 
 
 def generation_id(words: Sequence[Word], language: str,
@@ -431,7 +517,7 @@ def publication_is_consistent(directory: Path, words: Sequence[Word],
 
     try:
         payload = json.loads(
-            (directory / MANIFEST_NAME).read_text(encoding="utf-8"))
+            (directory / SOURCE_DIR / MANIFEST_NAME).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
     if not isinstance(payload, dict):
@@ -451,24 +537,29 @@ def publication_is_consistent(directory: Path, words: Sequence[Word],
             or len(set(declared_value)) != len(declared_value)):
         return False
     declared = set(declared_value)
-    canonical_names = {"words.json", *PUBLISHED_EXPORTS}
+    canonical_names = set(PUBLISHED_EXPORTS)
     if not declared.issubset(canonical_names):
         return False
+    # A `source/x` name resolves through `directory` unchanged, so the pre-move
+    # flat layout fails here rather than being adopted: its manifest declares
+    # `words.json`, which is no longer canonical, and recovery republishes.
     actual = {name for name in canonical_names
               if (directory / name).is_file()}
     if declared != actual:
         return False
 
-    required = {"words.json", "transcript.txt"}
+    required = {f"{SOURCE_DIR}/words.json", f"{SOURCE_DIR}/transcript.txt"}
     if words:
-        required.update({"premiere.json", "transcript.json", "transcript.srt"})
+        required.update({"premiere.json", "transcript.srt",
+                         f"{SOURCE_DIR}/transcript.json"})
     if not required.issubset(declared):
         return False
 
     if words:
         try:
             transcript = json.loads(
-                (directory / "transcript.json").read_text(encoding="utf-8"))
+                (directory / SOURCE_DIR / "transcript.json")
+                .read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return False
         if (not isinstance(transcript, dict)
@@ -494,10 +585,11 @@ def publication_is_consistent(directory: Path, words: Sequence[Word],
 
 
 def read_manifest(directory: Path) -> dict[str, Any]:
-    """The manifest for the export set in `directory`, or {} if there is none."""
+    """The manifest for the chunk folder `directory`, or {} if there is none."""
     reconcile_publication(directory)
     try:
-        payload = json.loads((directory / MANIFEST_NAME).read_text(encoding="utf-8"))
+        payload = json.loads(
+            (directory / SOURCE_DIR / MANIFEST_NAME).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}

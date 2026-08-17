@@ -176,8 +176,9 @@ class WriteExportsTests(unittest.TestCase):
             written = write_exports(directory, sample_words(),
                                     censor=CensorList(["damn"]),
                                     meta={"chunk": "c001"})
-            for name in ("premiere.json", "transcript.json", "transcript.srt",
-                         "transcript.txt", "censor-words.txt"):
+            for name in ("premiere.json", "transcript.srt", "censor-words.txt",
+                         "source/transcript.json", "source/transcript.txt",
+                         "source/words.json"):
                 self.assertIn(name, written)
                 self.assertTrue((directory / name).exists(), name)
             # Must be valid JSON on disk, not just in memory.
@@ -188,7 +189,8 @@ class WriteExportsTests(unittest.TestCase):
             directory = Path(tmp)
             write_exports(directory, [])
             self.assertFalse((directory / "premiere.json").exists())
-            self.assertIn("no speech", (directory / "transcript.txt").read_text())
+            self.assertIn("no speech",
+                          (directory / "source" / "transcript.txt").read_text())
 
 
 class GenerationIdentityTests(unittest.TestCase):

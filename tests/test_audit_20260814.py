@@ -732,7 +732,7 @@ class ExportGenerationTests(unittest.TestCase):
         from vodpipe.exports import MANIFEST_NAME, read_manifest, write_exports
         written = write_exports(self.tmp, self.words("hello", "world"))
         manifest = read_manifest(self.tmp)
-        self.assertTrue((self.tmp / MANIFEST_NAME).exists())
+        self.assertTrue((self.tmp / "source" / MANIFEST_NAME).exists())
         self.assertEqual(sorted(manifest["files"]), sorted(written))
         self.assertEqual(manifest["word_count"], 2)
         self.assertTrue(manifest["generation"])
@@ -751,7 +751,8 @@ class ExportGenerationTests(unittest.TestCase):
         import json
         from vodpipe.exports import read_manifest, write_exports
         write_exports(self.tmp, self.words("hello"))
-        payload = json.loads((self.tmp / "transcript.json").read_text(encoding="utf-8"))
+        payload = json.loads(
+            (self.tmp / "source" / "transcript.json").read_text(encoding="utf-8"))
         self.assertEqual(payload["generation"], read_manifest(self.tmp)["generation"])
 
     def test_a_render_failure_leaves_the_previous_generation_intact(self):
@@ -761,7 +762,8 @@ class ExportGenerationTests(unittest.TestCase):
 
         write_exports(self.tmp, self.words("first", "generation"))
         before = {name: (self.tmp / name).read_text(encoding="utf-8")
-                  for name in ("premiere.json", "transcript.srt", "transcript.txt")}
+                  for name in ("premiere.json", "transcript.srt",
+                               "source/transcript.txt")}
         original = read_manifest(self.tmp)
 
         class Exploding(CensorList):
@@ -786,7 +788,7 @@ class ExportGenerationTests(unittest.TestCase):
         write_exports(self.tmp, [])
         self.assertFalse((self.tmp / "premiere.json").exists(),
                          "Premiere would go on importing a stale transcript")
-        self.assertTrue((self.tmp / "transcript.txt").exists())
+        self.assertTrue((self.tmp / "source" / "transcript.txt").exists())
 
 
 class ProcessLivenessTests(unittest.TestCase):

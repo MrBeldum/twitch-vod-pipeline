@@ -87,7 +87,7 @@ class PublicationStructureTests(unittest.TestCase):
             meta={"chunk": "c000", "complete": True},
             words_meta={"language": "en", "complete": True,
                         "covered_seconds": 1.0, "expected_seconds": 1.0})
-        return load_words(directory / "words.json")
+        return load_words(directory / "source" / "words.json")
 
     def test_valid_set_is_consistent(self):
         with tempfile.TemporaryDirectory() as tmp:

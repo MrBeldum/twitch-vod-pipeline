@@ -191,7 +191,7 @@ class FinalisationCoverageTests(Fixture):
         self.assertEqual(self.chunk.transcript_status, "done")
         # Silence is still a published, explained result.
         self.assertTrue((self.session_dir / "transcripts" / "c000"
-                         / "transcript.txt").exists())
+                         / "source" / "transcript.txt").exists())
 
 
 class NoProgressTests(Fixture):
@@ -370,7 +370,7 @@ class OneShotCorrectnessTests(Fixture):
             self.transcriber.transcribe_file(self.source, self.output)
 
         self.assertEqual(len(provider.calls), 1)
-        meta = json.loads((self.output / "words.json").read_text(encoding="utf-8"))
+        meta = json.loads((self.output / "source" / "words.json").read_text(encoding="utf-8"))
         self.assertTrue(meta["complete"])
         self.assertEqual(meta["covered_seconds"], meta["expected_seconds"])
 
@@ -385,7 +385,7 @@ class OneShotCorrectnessTests(Fixture):
             self.transcriber.transcribe_file(self.source, self.output)
 
         self.assertEqual(len(provider.calls), 3)
-        meta = json.loads((self.output / "words.json").read_text(encoding="utf-8"))
+        meta = json.loads((self.output / "source" / "words.json").read_text(encoding="utf-8"))
         self.assertEqual(meta["covered_seconds"], 2.5)
         self.assertEqual(meta["expected_seconds"], 2.5)
 
@@ -415,7 +415,7 @@ class OneShotCorrectnessTests(Fixture):
                 patch("vodpipe.transcribe.media_duration", side_effect=probe):
             with self.assertRaisesRegex(RuntimeError, "short audio read"):
                 self.transcriber.transcribe_file(self.source, self.output)
-        self.assertFalse((self.output / "words.json").exists())
+        self.assertFalse((self.output / "source" / "words.json").exists())
 
     def test_zero_duration_and_no_audio_are_rejected(self):
         with patch("vodpipe.transcribe.live_duration", return_value=0.0):
@@ -427,7 +427,7 @@ class OneShotCorrectnessTests(Fixture):
                       side_effect=RuntimeError("has no readable audio stream")):
             with self.assertRaisesRegex(RuntimeError, "no readable audio"):
                 self.transcriber.transcribe_file(self.source, self.output)
-        self.assertFalse((self.output / "words.json").exists())
+        self.assertFalse((self.output / "source" / "words.json").exists())
 
     def test_explicit_language_reaches_provider_words_and_exports(self):
         fake_provider = MagicMock()
@@ -442,7 +442,7 @@ class OneShotCorrectnessTests(Fixture):
                 self.source, self.output, language="fr")
 
         self.assertEqual(provider_class.call_args.kwargs["language"], "fr")
-        words = json.loads((self.output / "words.json").read_text(encoding="utf-8"))
+        words = json.loads((self.output / "source" / "words.json").read_text(encoding="utf-8"))
         premiere = json.loads(
             (self.output / "premiere.json").read_text(encoding="utf-8"))
         self.assertEqual(words["language"], "fr")

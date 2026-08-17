@@ -604,7 +604,8 @@ def cmd_republish(config: Config, args) -> int:
                 continue
             try:
                 try:
-                    _, meta = load_words(directory / "words.json")
+                    _, meta = load_words(
+                        transcriber.words_path(session, chunk))
                 except CorruptWordsFile as exc:
                     print(f"  {session.session_id}/{chunk.label}: {exc}")
                     failed += 1

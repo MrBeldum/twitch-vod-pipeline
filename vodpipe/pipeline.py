@@ -21,7 +21,14 @@ from typing import Any, Callable, Iterable, Iterator
 from .channels import InvalidVod, parse_channel, parse_vod, vod_dir_name
 from .config import Config
 from .disk import DiskBudget, DiskReservation
-from .exports import GENERATION_FILES, publication_is_consistent, write_exports
+from .exports import (
+    EDIT_OWNED,
+    GENERATION_FILES,
+    SOURCE_DIR,
+    publication_is_consistent,
+    split_publication,
+    write_exports,
+)
 from .jobs import CANCELLED as JOB_CANCELLED
 from .jobs import QUEUED as JOB_QUEUED
 from .jobs import RUNNING as JOB_RUNNING
@@ -1061,7 +1068,8 @@ class Pipeline:
             if meta:
                 try:
                     if not publication_is_consistent(
-                            words_path.parent, words, meta):
+                            self.transcriber.output_dir(session, chunk),
+                            words, meta):
                         self.transcriber.republish(session, chunk)
                         actions.append("repaired transcript export generation")
                 except Exception as exc:
@@ -1297,7 +1305,8 @@ class Pipeline:
         if len(words) < minimum:
             return None, f"the transcript has {len(words)} words; {minimum} are required"
         try:
-            consistent = publication_is_consistent(path.parent, words, meta)
+            consistent = publication_is_consistent(
+                self.transcriber.output_dir(session, chunk), words, meta)
         except Exception as exc:
             return None, f"the transcript export generation is unreadable: {exc}"
         if not consistent:
@@ -1316,7 +1325,8 @@ class Pipeline:
         path = self.transcriber.words_path(session, chunk)
         try:
             words, meta = load_words(path)
-            if not publication_is_consistent(path.parent, words, meta):
+            if not publication_is_consistent(
+                    self.transcriber.output_dir(session, chunk), words, meta):
                 return ""
         except Exception:
             return ""
@@ -3041,21 +3051,31 @@ class Pipeline:
         self, session: Session, chunks: Iterable[Chunk],
     ) -> tuple[list[tuple[Path, dict[str, str], tuple[str, ...]]],
                dict[int, dict[str, Any]]]:
-        """Capture the exact rollback set, including generation-bound rundowns."""
-        owned = (*GENERATION_FILES, "rundown.md")
+        """Capture the exact rollback set, including generation-bound rundowns.
+
+        A generation spans the chunk folder and its `source/`, so the rollback
+        set does too -- both halves in one transaction, or a failed seam could
+        put back a `premiere.json` describing words that `source/words.json` no
+        longer holds. The rundown is owned here and nowhere else: it is derived
+        after the generation commits, but it *describes* that generation, so a
+        seam that rolls back must take it with the words it was written from.
+        """
         publications: list[tuple[Path, dict[str, str], tuple[str, ...]]] = []
         states: dict[int, dict[str, Any]] = {}
         for item in sorted(chunks, key=lambda target: target.index):
             directory = self.transcriber.output_dir(session, item)
             # Reconcile a preceding interrupted publication before taking bytes
             # that may later become rollback authority.
-            load_words(directory / "words.json")
+            load_words(self.transcriber.words_path(session, item))
             rendered = {
                 name: (directory / name).read_text(encoding="utf-8")
-                for name in owned
+                for name in (*GENERATION_FILES, "rundown.md")
                 if (directory / name).is_file()
             }
-            publications.append((directory, rendered, owned))
+            edit, source = split_publication(directory, rendered)
+            publications.append(
+                (edit[0], edit[1], (*EDIT_OWNED, "rundown.md")))
+            publications.append(source)
             states[item.index] = self._transcript_artifact_state(item)
         return publications, states
 
@@ -3425,7 +3445,7 @@ class Pipeline:
             # parse each declared JSON artifact so a truncated Premiere file is
             # not accepted merely because it exists in the manifest.
             manifest = json.loads(
-                (output / "exports.json").read_text(encoding="utf-8"))
+                (output / SOURCE_DIR / "exports.json").read_text(encoding="utf-8"))
             names = manifest.get("files")
             if not isinstance(names, list):
                 return False
@@ -3440,7 +3460,7 @@ class Pipeline:
         return True
 
     def _ensure_snapshot_publication(self, source: Path, output: Path) -> None:
-        words, meta = load_words(output / "words.json")
+        words, meta = load_words(output / SOURCE_DIR / "words.json")
         if not meta.get("complete"):
             raise RuntimeError("snapshot transcript did not reach complete coverage")
         if self._snapshot_publication_is_consistent(output, words, meta):
@@ -3455,7 +3475,7 @@ class Pipeline:
             meta={"source": source.name, "complete": True},
             words_meta=meta,
         )
-        words, meta = load_words(output / "words.json")
+        words, meta = load_words(output / SOURCE_DIR / "words.json")
         if (not meta.get("complete")
                 or not self._snapshot_publication_is_consistent(
                     output, words, meta)):
@@ -3618,7 +3638,7 @@ class Pipeline:
                 if transcript_status == DONE:
                     output = path.parent / f"{path.stem}_transcript"
                     try:
-                        words, meta = load_words(output / "words.json")
+                        words, meta = load_words(output / SOURCE_DIR / "words.json")
                         consistent = bool(meta.get("complete")) and \
                             self._snapshot_publication_is_consistent(
                                 output, words, meta)
@@ -3729,7 +3749,7 @@ class Pipeline:
                     continue
                 output = index.parent / f"{Path(filename).stem}_transcript"
                 try:
-                    words, meta = load_words(output / "words.json")
+                    words, meta = load_words(output / SOURCE_DIR / "words.json")
                 except Exception:
                     words = []
                     meta = {}
@@ -4067,7 +4087,26 @@ class Pipeline:
             # nothing said so until they were opened in Premiere.
             lines.append("")
             lines.append(f"> **Quality warning.** {session.quality_warning}")
+        # What to open, in the order you open it. This is the first file anyone
+        # looks at, and without it the answer lives only in the README.
         lines += [
+            "",
+            "## Start here",
+            "",
+            "1. Import the `master/` folder into Premiere, then select the clips "
+            "and **Proxy → Attach Proxies…** — the `Proxies/` names match Adobe's "
+            "own convention, so the dialog finds them.",
+            "2. Read `transcripts/<chunk>/rundown.md` to find what is worth "
+            "keeping.",
+            "3. Load the master in the **Source Monitor** (not a sequence), then "
+            "`Window > Text` → Transcript → `…` → **Import Static Transcript** "
+            "and choose that chunk's `premiere.json`.",
+            "",
+            "Each chunk folder holds only those four things you open — the "
+            "rundown, `premiere.json`, `transcript.srt` and `censor-words.txt`. "
+            "`source/` beside them keeps what the pipeline reads: the word "
+            "stream every export is rebuilt from, the verbatim Deepgram "
+            "responses, and the export manifest.",
             "",
             "| Chunk | Starts at | Duration | Size | Resolution | Master | Proxy | Transcript | Rundown |",
             "|---|---|---|---|---|---|---|---|---|",
