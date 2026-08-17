@@ -9,8 +9,14 @@ without waiting for the chunk to finish, and routing all Twitch traffic through 
 HTTP/SOCKS proxy.
 
 **It records and transcribes; it does not cut.** The automatic edited cut was built and
-then retracted on 2026-08-17 at the user's request — see the note below, and the
-`v1-ai-edit` branch, which carries it along with the model-decided variant.
+then retracted on 2026-08-17 at the user's request — see the note below. It now lives in
+its own repository, `github.com/MrBeldum/twitch-vod-ai-editor` (private), which is this
+same pipeline plus the cut and the model that decides it. The two were split on 2026-08-18
+because they are meant for different jobs, not because either is a draft of the other:
+this one hands over footage to cut by hand, that one makes a first pass at the cut. **The
+shared machinery is identical in both — capture, chunking, remux, proxies, rolling ASR,
+rundowns, snapshots, the VOD path, the network proxy — so a fix to any of it belongs in
+both repositories.**
 
 Status: **built, audited, hardened, and proven against real 8-hour recordings.** Two audits
 were worked through (neither document is retained in this tree; `tests/test_audit_20260814.py`
@@ -64,8 +70,8 @@ and neither cancels the other:
   chunk for a derivative one generation removed from a stream copy.
 
 The work is not lost: **`edit.py`, `audio.py`, `render.py` and the model-decided
-`aiedit.py` live on the `v1-ai-edit` branch**, with their tests and their measurements.
-`main` is the core pipeline.
+`aiedit.py` live in `github.com/MrBeldum/twitch-vod-ai-editor`**, with their tests and
+their measurements. This repository is the core pipeline.
 
 **What the retraction had to get right** is the part worth reading before removing
 anything else from this codebase. Two readers here are deliberately strict, and both would
@@ -255,8 +261,8 @@ Implementation notes worth knowing before changing anything:
   was wrong — Adobe's language list is a *closed enum* and the schema is
   `additionalProperties: false`, so `zh-cn`/`fi-fi`/`uk-ua`/`en-au` were not unfamiliar
   tags but invalid files.
-- **The edited cut's implementation notes moved with it, to `v1-ai-edit`.** Everything
-  learned building it is in that branch's `CLAUDE.md`: the acoustics-propose/transcript-
+- **The edited cut's implementation notes moved with it, to `twitch-vod-ai-editor`.**
+  Everything learned building it is in that repo's `CLAUDE.md`: the acoustics-propose/transcript-
   vetoes rule, the outward-only snap, deriving audio sample counts from video frame
   counts, clamping the plan to the frames that exist, the balanced `select` tree, the
   disk estimator anchored on the master's own size. If the cut is ever revived, read
@@ -333,7 +339,7 @@ Implementation notes worth knowing before changing anything:
 | 7 | Channels | **Arbitrary, user-added at runtime. Do not hardcode any channel.** User said "various streamers, don't assume which." |
 | 8 | Storage | Masters → Desktop, kept until manually cleared. Proxies → auto-deleted after 1 day. All adjustable. |
 | 9 | Language | Python for new code. The retired C# predecessor is archived privately at `github.com/MrBeldum/vod-transcript`. |
-| 10 | Automatic editing | **None.** Built 2026-08-17 and retracted the same day at the user's request: it worked, and it was still the wrong deliverable — an automatic cut has to be checked, and checking it means watching it. `main` records and transcribes. The cut lives on `v1-ai-edit`. |
+| 10 | Automatic editing | **None.** Built 2026-08-17 and retracted the same day at the user's request: it worked, and it was still the wrong deliverable — an automatic cut has to be checked, and checking it means watching it. This repository records and transcribes. The cut lives in `github.com/MrBeldum/twitch-vod-ai-editor`. |
 | 11 | Filler removal | **Manual, from a verbatim transcript.** Adobe's `filler` tag is not emitted (Premiere ignored it), and nothing here removes fillers from the media. `transcription.filler_words` stays on so every one is in the transcript and easy to find. |
 
 ---

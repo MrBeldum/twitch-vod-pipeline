@@ -231,7 +231,8 @@ operator's decision**, and the reasoning is worth keeping:
 
 What survives is the part that was actually useful: a **verbatim** transcript, with the
 hesitations in it, timed to the word, so a cut you make lands where you expect it to.
-If you want the automatic cut back, it lives on the `v1-ai-edit` branch.
+If you want the automatic cut, it is a separate tool: `MrBeldum/twitch-vod-ai-editor` is
+this same pipeline with the cut still in it, decided by a language model.
 
 ## How it works, and why
 
@@ -649,7 +650,7 @@ What happens when things go wrong, since a recorder is judged on its bad days:
 - **Nothing is cut for you.** No silence removal, no filler removal, no censoring of the
   media — the censor list is a list, and Premiere does the censoring. This build
   produces a master and the material to edit it with, and stops there. The automatic
-  cut lives on the `v1-ai-edit` branch if you want it.
+  cut is a separate tool, `MrBeldum/twitch-vod-ai-editor`.
 - The rundown is only as good as the transcript. Crosstalk, music and heavy accents all
   degrade it, and the prompt instructs the model to say so rather than guess.
 - `claude -p` shares your subscription usage limits.
