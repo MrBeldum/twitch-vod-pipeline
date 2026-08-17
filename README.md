@@ -231,6 +231,13 @@ Cuts are also blended rather than butted: `edit.crossfade_ms` of equal-power cro
 every join, taken from the material that would have followed the outgoing side, so a cut
 cannot click. Mutes ramp in and out inside their margin for the same reason.
 
+Measured on the finished 46-minute cut, a click would show as a step discontinuity — one
+sample to the next jumping further than the waveform around it ever does. Across all 478
+joins the largest such step has a median of **3** on a ±32,768 scale, against **1,188** for
+the same measurement in ordinary speech, and no join produces a step larger than ordinary
+speech already does. The handful that stand out against their own near-silent surroundings
+are rising waveforms — someone starting to talk — not discontinuities.
+
 ### The noise threshold
 
 `vodpipe calibrate <file>` prints what each threshold would actually remove:

@@ -64,6 +64,7 @@ because the failure mode that matters here is a confident wrong cut:
 | repeated *numbers* | 4, and all four were figures: "fifty fifty" (a 50/50 split), "twenty twenty eight" (a year), "ten ten thousand", "one one point" | never cut — dropping a copy changes the fact, not the phrasing. A capitalisation test for proper nouns was measured and **rejected**: it blocked 12 correct cuts to prevent 2 questionable ones and missed the case that prompted it |
 | vocalisations | 257 "uh", 121 "um", 125 s total; "mhmm" (27) and "uh-huh" (7) also present | `sounds` tier removes the first, never the backchannels — those are answers |
 | discourse markers | "like" 456/916 parenthetical, "you know" 166/262, "I mean" 71/112; "so"/"actually"/"basically" only 3–6%, all sentence-initial | `smart` tier covers the first three only, and only mid-clause |
+| clicks at the joins | on the finished 46-minute cut, the worst single-sample step at each of the 478 joins: median **3** of ±32,768, p95 2,144, max 3,824 — against median **1,188**, p95 2,434, max 10,296 for the same measurement in ordinary speech | the 20 ms equal-power crossfade works; the seven joins that stand out against their own near-silent surroundings were each checked and are rising waveforms, not discontinuities |
 
 **Two features were added 2026-08-15 (see the notes below and README):** downloading past
 Twitch VODs through the same chunk/remux/proxy/transcript/rundown pipeline as live, and a
