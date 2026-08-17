@@ -39,6 +39,21 @@
     "seam_seconds": 6.0
   },
 
+  "edit": {
+    "enabled": true,
+    "remove_silence": true,
+    "noise_floor_db": -41.0,
+    "min_silence_seconds": 0.2,
+    "min_speech_seconds": 0.2,
+    "margin_seconds": 0.2,
+    "fillers": "sounds",
+    "repeats": "restarts",
+    "censor": "mute",
+    "crossfade_ms": 20,
+    "quality": 22,
+    "encoder": "auto"
+  },
+
   "snapshots": {
     "max_concurrent": 2,
     "max_per_session": 1

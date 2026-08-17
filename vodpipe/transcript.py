@@ -578,8 +578,27 @@ def words_from_json(data: Any) -> list[Word]:
 
 
 def words_json_text(words: Sequence[Word], meta: dict[str, Any]) -> str:
-    payload = {**meta, "words": words_to_json(words)}
-    return json.dumps(payload, ensure_ascii=False)
+    """Serialise a word list, refusing one this module could not read back.
+
+    The reader is strict to a microsecond, so the single writer every
+    `words.json` goes through has to hold itself to the same rule -- and it
+    checks the *rendered* entries, because rounding a start and a duration
+    separately is one of the ways a valid word list becomes an invalid file.
+
+    A words.json that will not load is not a cosmetic defect. Nothing can read
+    it afterwards: not recovery, not `retranscribe`, and not the edited cut's
+    generation check, which reads it to decide whether to spend another
+    forty-minute encode. Refusing costs one publish and leaves the previous
+    outputs untouched, which is the recoverable direction.
+    """
+    rendered = words_to_json(words)
+    try:
+        words_from_json(rendered)
+    except CorruptWordsFile as exc:
+        raise CorruptWordsFile(
+            f"refusing to write a words.json that cannot be read back: {exc}"
+        ) from exc
+    return json.dumps({**meta, "words": rendered}, ensure_ascii=False)
 
 
 def save_words(path: Path, words: Sequence[Word], meta: dict[str, Any]) -> None:

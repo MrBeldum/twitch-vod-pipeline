@@ -17,6 +17,11 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 from .channels import InvalidChannel, parse_channel
+from .edit import (
+    CENSOR_MODES as EDIT_CENSOR_MODES,
+    FILLER_MODES as EDIT_FILLER_MODES,
+    REPEAT_MODES as EDIT_REPEAT_MODES,
+)
 from .quality import LOW_QUALITY_POLICIES
 from .util import safe_name_component
 
@@ -258,6 +263,29 @@ SCHEMA: dict[str, Callable[[Any, str], Any]] = {
     "transcription.stitch_chunk_boundaries": _boolean,
     "transcription.seam_seconds": _number(1, 120),
 
+    "edit.enabled": _boolean,
+    "edit.suffix": _suffix,
+    "edit.folder_name": _component,
+    "edit.encoder": _choice("auto", "h264_amf", "h264_nvenc", "h264_qsv",
+                            "libx264"),
+    "edit.quality": _number(0, 51, integer=True),
+    "edit.audio_bitrate": _text(allow_empty=False, max_length=16),
+    "edit.remove_silence": _boolean,
+    # Bounded well outside anything useful rather than narrowly: the readings
+    # this is compared against run from about -8 dB down to digital silence.
+    "edit.noise_floor_db": _number(-90, 0),
+    "edit.min_silence_seconds": _number(0.02, 30),
+    "edit.min_speech_seconds": _number(0, 30),
+    "edit.margin_seconds": _number(0, 5),
+    "edit.min_cut_seconds": _number(0, 10),
+    "edit.fillers": _choice(*EDIT_FILLER_MODES),
+    "edit.repeats": _choice(*EDIT_REPEAT_MODES),
+    "edit.censor": _choice(*EDIT_CENSOR_MODES),
+    "edit.censor_margin_seconds": _number(0, 2),
+    "edit.crossfade_ms": _number(0, 500),
+    "edit.mute_ramp_ms": _number(0, 500),
+    "edit.max_removed_fraction": _number(0.05, 0.99),
+
     "snapshots.max_concurrent": _number(1, 16, integer=True),
     "snapshots.max_per_session": _number(1, 16, integer=True),
 
@@ -382,6 +410,15 @@ def _cross_field(data: dict[str, Any]) -> None:
 
     if get("proxies.height", 2) % 2 != 0:
         raise ConfigError("proxies.height must be even (H.264 requires it)")
+
+    # Proxies self-delete after `proxies.retention_days` and the sweep is a glob
+    # over `master/<folder>/*.mp4`. Sharing that folder name would quietly make
+    # the edited cut -- a deliverable, not a scrubbing aid -- expire with them.
+    if get("edit.folder_name", "Edited") == get("proxies.folder_name", "Proxies"):
+        raise ConfigError(
+            "edit.folder_name must differ from proxies.folder_name: proxies are "
+            "deleted automatically after proxies.retention_days, and an edited "
+            "cut sharing their folder would be deleted with them")
 
     host = get("dashboard.host", "127.0.0.1")
     if host not in ("127.0.0.1", "localhost"):

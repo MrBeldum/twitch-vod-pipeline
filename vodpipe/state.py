@@ -66,7 +66,8 @@ _CHUNK_FIELDS = frozenset({
     "master_name", "proxy_name", "duration", "size_bytes", "status",
     "master_error", "session_offset", "proxy_status", "proxy_error",
     "transcript_status", "transcript_error", "summary_status",
-    "summary_error", "transcribed_through", "word_count", "ended_at",
+    "summary_error", "edit_status", "edit_error", "edit_name",
+    "transcribed_through", "word_count", "ended_at",
     "width", "height", "label", "errors", "error",
 })
 
@@ -229,7 +230,7 @@ def _validate_chunk(raw: Any, position: int, session_id: str,
     _number(data["started_at"], f"{where}.started_at")
     _number(data.get("ended_at", 0.0), f"{where}.ended_at")
 
-    for name in ("ts_name", "master_name", "proxy_name"):
+    for name in ("ts_name", "master_name", "proxy_name", "edit_name"):
         value = _text(data.get(name, ""), f"{where}.{name}")
         if value and not _is_plain_filename(value):
             raise ManifestValidationError(
@@ -242,9 +243,11 @@ def _validate_chunk(raw: Any, position: int, session_id: str,
             f"{where}.transcript_status", _ARTIFACT_STATES)
     _status(data.get("summary_status", PENDING),
             f"{where}.summary_status", _ARTIFACT_STATES)
+    _status(data.get("edit_status", PENDING),
+            f"{where}.edit_status", _ARTIFACT_STATES)
 
     for name in ("master_error", "proxy_error", "transcript_error",
-                 "summary_error", "error"):
+                 "summary_error", "edit_error", "error"):
         if name in data:
             _text(data[name], f"{where}.{name}")
 
@@ -259,7 +262,7 @@ def _validate_chunk(raw: Any, position: int, session_id: str,
             raise ManifestValidationError(f"{where}.label does not match its index")
     if "errors" in data:
         errors = _object(data["errors"], f"{where}.errors")
-        allowed_errors = {"master", "proxy", "transcript", "summary"}
+        allowed_errors = {"master", "proxy", "transcript", "summary", "edit"}
         unknown = sorted(set(errors) - allowed_errors)
         if unknown:
             raise ManifestValidationError(
@@ -365,6 +368,9 @@ class Chunk:
     ts_name: str = ""
     master_name: str = ""
     proxy_name: str = ""
+    # The cut-down deliverable: silences, fillers and false starts removed,
+    # censored words muted. Derived from the master, never replacing it.
+    edit_name: str = ""
     duration: float = 0.0
     size_bytes: int = 0
     # Lifecycle of the master itself. Each artifact carries its own status and
@@ -381,6 +387,8 @@ class Chunk:
     transcript_error: str = ""
     summary_status: str = PENDING
     summary_error: str = ""
+    edit_status: str = PENDING
+    edit_error: str = ""
     # Seconds of audio already sent to the transcriber, chunk-relative.
     transcribed_through: float = 0.0
     word_count: int = 0
@@ -399,7 +407,8 @@ class Chunk:
     def errors(self) -> dict[str, str]:
         """Every artifact failure on this chunk, keyed by artifact."""
         pairs = (("master", self.master_error), ("proxy", self.proxy_error),
-                 ("transcript", self.transcript_error), ("summary", self.summary_error))
+                 ("transcript", self.transcript_error),
+                 ("summary", self.summary_error), ("edit", self.edit_error))
         return {name: text for name, text in pairs if text}
 
     def to_dict(self) -> dict[str, Any]:
@@ -488,7 +497,8 @@ class Session:
             # to `C:/Users/.../important.mp4` had recovery validate and unlink
             # that file -- and `..` walks out just as easily. Anything that is not
             # a single plain filename is dropped rather than trusted.
-            for field_name in ("ts_name", "master_name", "proxy_name"):
+            for field_name in ("ts_name", "master_name", "proxy_name",
+                               "edit_name"):
                 value = str(fields.get(field_name) or "")
                 if value and not _is_plain_filename(value):
                     LOG.warning(
@@ -784,6 +794,8 @@ class SessionStore:
                       "transcribed_through", "word_count"}),
                     ("summary_status", frozenset({DONE, ERROR, SKIPPED}),
                      {"summary_status", "summary_error"}),
+                    ("edit_status", frozenset({DONE, ERROR, SKIPPED}),
+                     {"edit_status", "edit_error", "edit_name"}),
                 )
                 for status_name, terminal, group in outcome_groups:
                     if (local_chunk.get(status_name)
@@ -1005,7 +1017,7 @@ class SessionStore:
                     repaired = True
                 # An artifact cannot still be running: its worker is gone.
                 for field_name in ("proxy_status", "transcript_status",
-                                   "summary_status"):
+                                   "summary_status", "edit_status"):
                     if getattr(chunk, field_name) == RUNNING:
                         setattr(chunk, field_name, PENDING)
                         repaired = True

@@ -976,6 +976,308 @@ def make_proxy(
             temp.unlink(missing_ok=True)
 
 
+# --------------------------------------------------------------------- editing
+
+# Window over which the loudness envelope is measured. 10 ms is fine enough to
+# place a cut inside a gap between words and coarse enough that a two-hour chunk
+# is 720,000 readings rather than tens of millions.
+ENVELOPE_HOP_SECONDS = 0.010
+
+
+def parse_envelope(text: str) -> list[float]:
+    """RMS dB per window out of `astats` + `ametadata=print`.
+
+    Digital silence comes back as `-inf`. That is a real reading, not a parse
+    failure, so it becomes a very low finite number and every consumer can do
+    plain arithmetic with the result.
+    """
+    levels: list[float] = []
+    for line in text.splitlines():
+        if not line.startswith("lavfi.astats."):
+            continue
+        _, _, value = line.partition("=")
+        value = value.strip()
+        if not value:
+            continue
+        if "inf" in value.lower():
+            levels.append(-120.0 if value.lstrip().startswith("-") else 0.0)
+            continue
+        try:
+            levels.append(float(value))
+        except ValueError:
+            continue
+    return levels
+
+
+def audio_envelope(tools: Tools, source: Path, *,
+                   hop_seconds: float = ENVELOPE_HOP_SECONDS,
+                   sample_rate: int = 48000,
+                   timeout: float = 7200.0) -> tuple[list[float], float]:
+    """RMS level per window across the whole file. Returns (levels, hop).
+
+    `astats` rather than `silencedetect` because this is measured once and then
+    thresholded in Python as often as we like: the noise floor becomes a number
+    the report can show alternatives for instead of a decision baked into an
+    ffmpeg run, and the same readings place the cuts inside the quietest part of
+    a gap. One audio-decode pass, about fifty times realtime.
+    """
+    hop = max(0.001, float(hop_seconds))
+    window = max(1, int(round(hop * sample_rate)))
+    result = run(
+        [tools.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
+         "-nostats", "-i", str(source), "-vn",
+         "-af", (f"asetnsamples=n={window}:p=0,astats=metadata=1:reset=1,"
+                 "ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-"),
+         "-f", "null", "-"],
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"could not measure audio levels: {result.stderr.strip()[-500:]}")
+    levels = parse_envelope(result.stdout)
+    if not levels:
+        raise RuntimeError(
+            f"{source.name} produced no audio level readings; it may have no "
+            f"audio track")
+    return levels, window / float(sample_rate)
+
+
+def extract_pcm(tools: Tools, source: Path, destination: Path, *,
+                sample_rate: int = 48000, channels: int = 2,
+                audio_stream: str | int = "auto",
+                timeout: float = 7200.0) -> Path:
+    """Decode the whole audio track to 16-bit PCM for sample-exact assembly."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    selector: list[str] = []
+    if isinstance(audio_stream, int) and not isinstance(audio_stream, bool):
+        selector = ["-map", f"0:{int(audio_stream)}"]
+    result = run(
+        [tools.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+         "-i", str(source), "-vn", *selector,
+         "-ac", str(int(channels)), "-ar", str(int(sample_rate)),
+         "-c:a", "pcm_s16le", str(destination)],
+        timeout=timeout,
+    )
+    if result.returncode != 0 or not destination.exists():
+        raise RuntimeError(
+            f"could not extract audio from {source.name}: "
+            f"{result.stderr.strip()[-500:]}")
+    return destination
+
+
+def keep_expression(ranges: Sequence[tuple[float, float]]) -> str:
+    """`select` expression keeping only the listed second ranges.
+
+    Written as a balanced binary search rather than a sum of `between()` terms.
+    The flat form is O(n) per frame, and a two-hour chunk measured ~950 ranges over
+    432,000 frames -- 400 million expression evaluations before a single
+    macroblock is encoded. The tree is O(log n): ten comparisons a frame.
+    """
+    if not ranges:
+        return "0"
+
+    def branch(low: int, high: int) -> str:
+        if high - low == 1:
+            start, end = ranges[low]
+            return f"between(t,{start:.6f},{end:.6f})"
+        middle = (low + high) // 2
+        return (f"if(lt(t,{ranges[middle][0]:.6f}),"
+                f"{branch(low, middle)},{branch(middle, high)})")
+
+    return branch(0, len(ranges))
+
+
+def render_edited_video(tools: Tools, source: Path, destination: Path,
+                        ranges: Sequence[tuple[float, float]], *,
+                        fps: float, encoder: str = "libx264", quality: int = 20,
+                        script_path: Path | None = None,
+                        timeout: float = 14400.0) -> int:
+    """Encode the kept frames as exact CFR video. Returns the frame count.
+
+    `setpts=PTS-STARTPTS` before the rate normalisation puts frame 0 at time 0,
+    which is what makes the range arithmetic in `audio.segments_for` land on the
+    same frames this filter selects. The trailing `setpts=N/fps/TB` re-times the
+    survivors into a gapless timeline.
+
+    The expression goes in a file: it runs to tens of kilobytes on a real chunk,
+    far past what a Windows command line accepts.
+
+    The timeout matches `pipeline.MEDIA_SUBPROCESS_TIMEOUT`, which is what the
+    shutdown join budget is modelled on. A measured two-hour 1080p60 chunk takes
+    about forty minutes here, so four hours is a runaway guard rather than a
+    limit anything legitimate approaches.
+    """
+    if fps <= 0:
+        raise RuntimeError("cannot render an edit without a frame rate")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    script = script_path or destination.with_suffix(".filter.txt")
+    expression = keep_expression(ranges)
+    script.write_text(
+        f"setpts=PTS-STARTPTS,fps={fps:.6f},select='{expression}',"
+        f"setpts=N/{fps:.6f}/TB",
+        encoding="utf-8")
+
+    gop = max(1, int(round(fps)))
+    codec_args = _edit_codec_args(encoder, quality)
+    try:
+        result = run(
+            [tools.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+             "-i", str(source), "-an", "-sn", "-dn",
+             "-filter_script:v", str(script),
+             *codec_args, "-pix_fmt", "yuv420p", "-g", str(gop),
+             str(destination)],
+            timeout=timeout,
+        )
+        if result.returncode != 0 or not destination.exists():
+            raise RuntimeError(
+                f"edited video encode failed: {result.stderr.strip()[-800:]}")
+    finally:
+        script.unlink(missing_ok=True)
+
+    probe = ffprobe_json(tools.ffprobe, destination)
+    video = next((stream for stream in probe.get("streams", [])
+                  if stream.get("codec_type") == "video"), None)
+    if video is None:
+        raise RuntimeError("the edited video has no video stream")
+    frames = _probe_number(video.get("nb_frames"))
+    return int(frames) if frames else 0
+
+
+def _edit_codec_args(encoder: str, quality: int) -> list[str]:
+    """Encoder settings for the edit. Deliberately better than the proxy's.
+
+    The edit is a deliverable, not a scrubbing aid: it is the file the operator
+    hands on, and it is already one generation away from a stream copy, so the
+    quality target is tighter and the speed preset slower than `make_proxy`.
+    """
+    value = max(0, min(51, int(quality)))
+    if encoder == "libx264":
+        return ["-c:v", "libx264", "-preset", "medium", "-crf", str(value),
+                "-profile:v", "high"]
+    if encoder == "h264_amf":
+        return ["-c:v", "h264_amf", "-rc", "cqp", "-qp_i", str(value),
+                "-qp_p", str(value), "-quality", "quality"]
+    if encoder == "h264_nvenc":
+        return ["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "constqp",
+                "-qp", str(value)]
+    if encoder == "h264_qsv":
+        return ["-c:v", "h264_qsv", "-global_quality", str(value)]
+    return ["-c:v", encoder, "-b:v", "8M"]
+
+
+def mux_edited(tools: Tools, video: Path, audio: Path, destination: Path, *,
+               audio_bitrate: str = "192k", timeout: float = 7200.0) -> None:
+    """Join the rendered video and the assembled audio without re-encoding video."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    result = run(
+        [tools.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+         "-i", str(video), "-i", str(audio),
+         "-map", "0:v:0", "-map", "1:a:0",
+         "-c:v", "copy", "-c:a", "aac", "-b:a", audio_bitrate,
+         "-movflags", "+faststart", str(destination)],
+        timeout=timeout,
+    )
+    if result.returncode != 0 or not destination.exists():
+        raise RuntimeError(
+            f"could not mux the edited chunk: {result.stderr.strip()[-800:]}")
+
+
+def edit_stream_geometry(tools: Tools,
+                         source: Path) -> tuple[float, float, int, int]:
+    """(fps, video_start - audio_start, sample_rate, video_frames).
+
+    Neither of the last two is a formality.
+
+    The start-time delta: on the reference masters the video stream starts at
+    0.034s and the audio at 0.044s, and the extracted PCM begins at the audio's
+    start, so without the 10 ms correction every audio segment is taken 480
+    samples from the wrong place.
+
+    The frame count: the two streams of a real capture do not end together. One
+    reference chunk's audio runs 1.03s past its video. The edit plan is built on
+    the audio, so without a frame ceiling its tail asks the encoder for frames
+    that were never recorded.
+    """
+    probe = ffprobe_json(tools.ffprobe, source)
+    streams = probe.get("streams", [])
+    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    if video is None:
+        raise RuntimeError(f"{source.name} has no video stream to edit")
+    if audio is None:
+        raise RuntimeError(f"{source.name} has no audio stream to edit")
+    fps = _stream_frame_rate(video)
+    if fps <= 0:
+        raise RuntimeError(f"{source.name} does not report a usable frame rate")
+    video_start = _probe_number(video.get("start_time")) or 0.0
+    audio_start = _probe_number(audio.get("start_time")) or 0.0
+    rate = _probe_number(audio.get("sample_rate")) or 48000.0
+    frames = _probe_number(video.get("nb_frames")) or 0.0
+    if frames <= 0:
+        # Not every container carries a frame count. Derive one, and round down:
+        # claiming a frame that is not there is the failure this exists to stop.
+        duration = _probe_number(video.get("duration")) or _probe_duration(probe)
+        frames = math.floor(max(0.0, duration) * fps)
+    return fps, video_start - audio_start, int(rate), int(frames)
+
+
+# How much bigger than its source a re-encode at EDIT_SIZE_ANCHOR_QUALITY may
+# come out. Measured: a 1080p60 chunk re-encoded at QP 22 landed at 7.6 Mbps
+# against the master's 7.7 Mbps, i.e. 1.0x, so 1.5 is half again as much room.
+EDIT_SIZE_FACTOR = 1.5
+EDIT_SIZE_ANCHOR_QUALITY = 22.0
+
+
+def estimate_edit_peak_bytes(tools: Tools, source: Path, *, quality: int = 22,
+                             audio_bitrate: str = "192k",
+                             kept_fraction: float = 1.0) -> int:
+    """Peak disk for one staged edit, including its PCM scratch files.
+
+    Anchored on the *source file's own size* rather than a bits-per-pixel model.
+    The edit is a re-encode of that exact footage at that exact resolution, so
+    the master is the best available predictor of what comes out -- far better
+    than a pixel-count model, which has to be pessimistic about content it
+    cannot see.
+
+    That distinction is not academic. The bpp model this replaced asked for
+    **82 GB** to build a chunk whose real peak was 13 GB, which is the same
+    mistake `estimate_proxy_peak_bytes` is corrected for: a reservation the drive
+    cannot meet does not protect the disk, it turns the feature off. Under-
+    reserving is the recoverable direction -- `render_edit` stages everything in
+    a working directory and removes it -- so a full drive costs one failed
+    encode, whereas over-reserving costs every edit.
+
+    What is actually on disk at once, for a two-hour 1080p60 chunk:
+    the source PCM (1.4 GB), the edited PCM (~1.2 GB), the rendered video-only
+    file (~8 GB) and the muxed output (~8 GB).
+    """
+    probe = ffprobe_json(tools.ffprobe, source)
+    streams = probe.get("streams", [])
+    if not any(s.get("codec_type") == "video" for s in streams):
+        raise RuntimeError(f"{source.name} has no video stream to edit")
+    duration = _probe_duration(probe)
+    share = max(0.05, min(1.0, float(kept_fraction)))
+
+    try:
+        source_bytes = source.stat().st_size
+    except OSError as exc:
+        raise RuntimeError(f"cannot size {source.name}: {exc}") from exc
+    # Lower quality numbers mean bigger files, at roughly a doubling every six
+    # steps -- the same relationship the proxy model uses.
+    steps = min(16.0, (EDIT_SIZE_ANCHOR_QUALITY - float(int(quality)))
+                / PROXY_BPP_HALVING_STEP)
+    factor = EDIT_SIZE_FACTOR * (2.0 ** steps)
+    video_bytes = math.ceil(source_bytes * share * factor)
+
+    bitrate = _bitrate_bits_per_second(audio_bitrate) or 192_000.0
+    audio_bytes = math.ceil(duration * share * bitrate / 8.0)
+    # Source PCM plus edited PCM, both 16-bit stereo at 48 kHz.
+    pcm_bytes = math.ceil(duration * (1.0 + share) * 48000 * 2 * 2)
+    # The rendered video-only file and the muxed output both exist for a moment.
+    payload = 2 * video_bytes + audio_bytes + pcm_bytes
+    return int(payload + max(8 * 1024 * 1024, math.ceil(payload * 0.02)))
+
+
 # -------------------------------------------------------------------------- audio
 
 

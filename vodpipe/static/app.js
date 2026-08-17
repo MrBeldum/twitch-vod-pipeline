@@ -401,6 +401,8 @@ function sessionBody(session) {
       el('td', {}, [statusChip(chunk.transcript_status), chunk.word_count
         ? el('span', { class: 'when', text: ` ${chunk.word_count} words` }) : null]),
       el('td', {}, [statusChip(chunk.summary_status)]),
+      el('td', {}, [statusChip(chunk.edit_status), chunk.edit_name
+        ? el('span', { class: 'when', text: ' ready' }) : null]),
       el('td', {}, Object.keys(chunk.errors || {}).length
         ? [el('span', {
             class: 'status error',
@@ -417,6 +419,16 @@ function sessionBody(session) {
           }).then(() => toast(`Queued re-transcribe for ${chunk.label}`))),
         }),
         el('button', {
+          class: 'ghost', text: 'Re-cut',
+          disabled: chunk.transcript_status !== 'done',
+          title: chunk.transcript_status === 'done'
+            ? 'Rebuild the edited cut with the current settings'
+            : 'Needs a complete transcript first',
+          onclick: () => guard(api('/api/chunk/edit', {
+            session_id: session.session_id, chunk: chunk.label,
+          }).then(() => toast(`Queued edited cut for ${chunk.label}`))),
+        }),
+        el('button', {
           class: 'ghost', text: 'Rundown',
           disabled: !summaryAllowed,
           title: summaryAllowed ? 'Generate this rundown' : (summaryReason || 'Rundown unavailable'),
@@ -429,7 +441,7 @@ function sessionBody(session) {
     });
 
   const table = el('table', {}, [
-    el('thead', {}, [el('tr', {}, ['Chunk', 'Starts', 'Length', 'Size', 'Resolution', 'Master', 'Proxy', 'Transcript', 'Rundown', 'Problems', '']
+    el('thead', {}, [el('tr', {}, ['Chunk', 'Starts', 'Length', 'Size', 'Resolution', 'Master', 'Proxy', 'Transcript', 'Rundown', 'Edit', 'Problems', '']
       .map(label => el('th', { text: label })))]),
     el('tbody', {}, rows),
   ]);
@@ -600,6 +612,31 @@ const SETTINGS_SCHEMA = [
       desc: 'Keeps the transcript verbatim, so a cut made from the text lands where you expect and a filler can be selected and deleted on its own. Turn it off for cleaner reading copy. Premiere\'s automatic "delete all fillers" is not supported — it never recognised the tags.' },
     { path: 'transcription.stitch_chunk_boundaries', label: 'Repair words across chunk boundaries', type: 'checkbox',
       desc: 'Chunks are separate files, so a word spoken across the join is clipped in both. This re-transcribes a few seconds spanning the join — one extra short request per boundary.' },
+  ]},
+  { title: 'Edited cut', fields: [
+    { path: 'edit.enabled', label: 'Produce an edited cut', type: 'checkbox',
+      desc: 'A second file beside each master with silences, filler sounds and false starts removed and censored words muted. The master is never touched, so a cut you disagree with costs a re-run and nothing else. Roughly 40 minutes of background encoding per 2-hour chunk.' },
+    { path: 'edit.remove_silence', label: 'Remove silences', type: 'checkbox' },
+    { path: 'edit.noise_floor_db', label: 'Noise threshold (dB)', type: 'number',
+      desc: 'Anything quieter counts as silence. A talking stream is loud or near-silent with little in between, so anything from -35 to -50 gives almost the same result; edit.md lists what each threshold would have removed from this recording.' },
+    { path: 'edit.min_silence_seconds', label: 'Remove silences longer than (s)', type: 'number' },
+    { path: 'edit.min_speech_seconds', label: 'Keep talk longer than (s)', type: 'number',
+      desc: 'Shorter islands of sound are dropped as clicks and breaths — unless a word was transcribed there, in which case they are kept.' },
+    { path: 'edit.margin_seconds', label: 'Margin before & after (s)', type: 'number' },
+    { path: 'edit.min_cut_seconds', label: 'Smallest cut worth making (s)', type: 'number',
+      desc: 'A gap shorter than this is left alone rather than becoming a jump cut that saves a tenth of a second.' },
+    { path: 'edit.fillers', label: 'Remove fillers', type: 'select',
+      options: ['off', 'sounds', 'smart'],
+      desc: '"sounds" removes hesitation noises only ("uh", "um") and never touches "mhmm" or "uh-huh", which are answers. "smart" also removes "like" / "you know" / "I mean" where the transcript punctuated them as an aside inside a sentence.' },
+    { path: 'edit.repeats', label: 'Remove repeats', type: 'select',
+      options: ['off', 'stutters', 'restarts'],
+      desc: 'Stutters ("the the") and, with "restarts", repeated phrases ("I can I can"). Deliberate repetition is punctuated by the transcript — "No. No.", "money, money, money" — and is kept.' },
+    { path: 'edit.censor', label: 'Censored words', type: 'select', options: ['off', 'mute'],
+      desc: 'Words from your master list are silenced in place. Muting rather than cutting keeps the picture, the timing and the transcript intact.' },
+    { path: 'edit.crossfade_ms', label: 'Crossfade at cuts (ms)', type: 'number',
+      desc: 'Audio is blended across every join so a cut cannot click.' },
+    { path: 'edit.quality', label: 'Quality (CRF / QP)', type: 'number' },
+    { path: 'edit.encoder', label: 'Encoder', type: 'select', options: ['auto', 'h264_amf', 'h264_nvenc', 'h264_qsv', 'libx264'] },
   ]},
   { title: 'Snapshots', fields: [
     { path: 'snapshots.max_concurrent', label: 'Cuts at once (all sessions)', type: 'number',

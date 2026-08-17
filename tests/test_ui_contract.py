@@ -137,3 +137,39 @@ class SettingsSchemaTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChunkTableTests(unittest.TestCase):
+    """The chunk table's header row and its cells must stay the same width.
+
+    Adding an artifact column means touching two places that look nothing alike
+    -- a list of header strings and a sequence of `el('td', ...)` calls -- and
+    getting one of them wrong shifts every column after it without any error.
+    """
+
+    def row(self) -> str:
+        start = JS.index("function sessionBody(")
+        end = JS.index("el('thead'", start)
+        return JS[start:end]
+
+    def headers(self) -> list[str]:
+        start = JS.index("el('thead'")
+        block = JS[start:JS.index("]\n", start)]
+        # The two element names the header row is built from are not columns.
+        labels = re.findall(r"'([^']*)'", block)
+        return [label for label in labels if label not in ("thead", "tr")]
+
+    def test_the_header_and_the_cells_have_the_same_width(self):
+        cells = len(re.findall(r"el\('td'", self.row()))
+        self.assertEqual(cells, len(self.headers()),
+                         f"{cells} cells against {self.headers()}")
+
+    def test_the_edited_cut_has_a_column_of_its_own(self):
+        """It is a separate artifact with a separate status, like the proxy."""
+        self.assertIn("Edit", self.headers())
+        self.assertIn("chunk.edit_status", self.row())
+
+    def test_every_artifact_status_the_state_model_carries_is_shown(self):
+        for field in ("status", "proxy_status", "transcript_status",
+                      "summary_status", "edit_status"):
+            self.assertIn(f"chunk.{field}", self.row(), field)

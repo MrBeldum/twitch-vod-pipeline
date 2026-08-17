@@ -72,6 +72,7 @@ TRANSCRIPT_OUTPUT_NAMES = frozenset({
     MANIFEST_NAME,
     "words.json",
     "rundown.md",
+    "edit.md",
 })
 SESSION_OUTPUT_NAMES = frozenset({"index.md"})
 SNAPSHOT_OUTPUT_NAMES = frozenset({"snapshots.json"})
@@ -418,6 +419,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/snapshot": self._snapshot,
             "/api/chunk/retranscribe": self._retranscribe,
             "/api/chunk/summarize": self._summarize,
+            "/api/chunk/edit": self._edit,
             "/api/config": self._save_config,
             "/api/reveal": self._reveal,
         }
@@ -607,6 +609,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             raise ApiError(str(exc), HTTPStatus.CONFLICT)
         return self._accepted(job, "this rundown")
 
+    def _edit(self, body: dict[str, Any]) -> Any:
+        session, chunk = self._session_chunk(body)
+        try:
+            job = self.pipeline.recut(session, chunk)
+        except RuntimeError as exc:
+            raise ApiError(str(exc), HTTPStatus.CONFLICT)
+        return self._accepted(job, "this edited cut")
+
     def _save_config(self, body: dict[str, Any]) -> Any:
         if not isinstance(body, dict):
             raise ApiError("expected a config object")
@@ -682,6 +692,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 raise ApiError(f"unknown chunk {chunk_label}", HTTPStatus.NOT_FOUND)
             targets.append(("transcript", root / "transcripts" / match.label,
                             TRANSCRIPT_OUTPUT_NAMES))
+            edited = root / "transcripts" / match.label / "edited"
+            if edited.is_dir():
+                targets.append(("edited cut", edited, TRANSCRIPT_OUTPUT_NAMES))
         else:
             for chunk in sorted(session.chunks, key=lambda item: item.index):
                 targets.append((chunk.label, root / "transcripts" / chunk.label,
@@ -693,6 +706,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             for child in self._snapshot_transcript_dirs(session):
                 targets.append((f"snapshot: {child.name}", child,
                                 TRANSCRIPT_OUTPUT_NAMES))
+            # The edited cut carries its own export set, in its own directory,
+            # so text-based editing works against the file that was cut rather
+            # than only against the master it came from.
+            for chunk in sorted(session.chunks, key=lambda item: item.index):
+                edited = root / "transcripts" / chunk.label / "edited"
+                if edited.is_dir():
+                    targets.append((f"{chunk.label}: edited cut", edited,
+                                    TRANSCRIPT_OUTPUT_NAMES))
             targets.append(("session", root, SESSION_OUTPUT_NAMES))
 
         for name, directory, allowed_names in targets:
