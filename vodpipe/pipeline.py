@@ -54,8 +54,10 @@ from .media import (
     remux_to_mp4,
     validate_master,
     validate_proxy,
+    verify_master_readable,
     video_dimensions,
 )
+from .models import PROVIDER_SECRETS
 from .recorder import Recorder
 from .snapshot import (
     SnapshotRequest,
@@ -934,6 +936,9 @@ class Pipeline:
                 validate_master(
                     self.tools, master, chunk.duration,
                     source=(live if live is not None and live.is_file() else None))
+                self._verify_before_reclaim(
+                    session, chunk, master,
+                    live if live is not None and live.is_file() else None)
             except Exception as exc:
                 rebuildable = bool(
                     live is not None and live.is_file() and live.stat().st_size > 0)
@@ -1274,16 +1279,34 @@ class Pipeline:
             self.config.get("summary.provider") or "").lower() != "none"
 
     def _summary_capability(self) -> tuple[bool, str]:
+        """Can the configured engine be asked at all? One answer, five callers.
+
+        Driven by `models.PROVIDER_SECRETS` rather than a chain of provider
+        names, so adding an engine does not mean remembering to teach this
+        function about it -- the dashboard, recovery, the API and the job all
+        read their verdict from here.
+        """
         if not self._summary_enabled():
             return False, "rundowns are disabled"
         provider = str(self.config.get("summary.provider") or "claude-cli").lower()
-        if provider == "anthropic-api":
-            if self.config.secret("anthropic_api_key"):
+        secret = PROVIDER_SECRETS.get(provider)
+        if secret:
+            if self.config.secret(secret):
                 return True, ""
-            return False, "no Anthropic API key is configured"
+            return False, (f"no API key is configured for {provider} "
+                           f"(secrets.{secret})")
+        if provider == "cli":
+            if self._summary_cli_command():
+                return True, ""
+            return False, ("summary.cli_command is not set, so there is no "
+                           "command to run")
         if self.tools.claude:
             return True, ""
         return False, "the claude executable is unavailable"
+
+    def _summary_cli_command(self) -> list[str]:
+        return [str(part) for part in (self.config.get("summary.cli_command") or [])
+                if str(part).strip()]
 
     def _summary_source(self, session: Session,
                         chunk: Chunk) -> tuple[_SummarySource | None, str]:
@@ -2447,6 +2470,26 @@ class Pipeline:
             raise RuntimeError("; ".join(f"{name}: {text}"
                                          for name, text in failures.items()))
 
+    def _verify_before_reclaim(self, session: Session, chunk: Chunk,
+                               master: Path, source: Path | None) -> None:
+        """Prove a master reads end to end, but only when a `.ts` is at stake.
+
+        *2026-08-18.* The deep read costs one pass over the file. It is worth
+        paying exactly at the moment the recording is about to exist in one copy
+        only, and not worth paying on every start for every master that has
+        already outlived its source -- recovery walks every session on disk, and
+        re-reading fifty gigabytes of finished masters to learn nothing would
+        turn startup into a disk scrub.
+
+        So the rule is: **a master is deep-verified precisely when its `.ts`
+        would be deleted next.** Anywhere else, the header validation stands.
+        """
+        if source is None or not source.is_file():
+            return
+        if not self.config.get("recording.verify_master", True):
+            return
+        verify_master_readable(self.tools, master)
+
     def _remux(self, session: Session, chunk: Chunk) -> None:
         source = session.path / "live" / chunk.ts_name
         destination = session.path / "master" / chunk.master_name
@@ -2458,6 +2501,9 @@ class Pipeline:
                 validate_master(
                     self.tools, destination, chunk.duration,
                     source=(source if source.is_file() else None))
+                self._verify_before_reclaim(
+                    session, chunk, destination,
+                    source if source.is_file() else None)
             except Exception as exc:
                 if not source.exists():
                     # Nothing to rebuild from, so deleting this would turn "did
@@ -2492,11 +2538,7 @@ class Pipeline:
             return
 
         try:
-            # The MP4 lives beside the .ts until the remux validates, so the
-            # transient requirement is roughly the chunk over again.
-            with self.disk_budget.reserve(
-                    source.stat().st_size, f"remuxing {chunk.label}"):
-                remux_to_mp4(self.tools, source, destination, chunk.duration)
+            self._remux_with_retries(session, chunk, source, destination)
         except Exception as exc:
             # The .ts is deliberately left in place: it is now the only copy.
             LOG.error("%s/%s: remux failed, keeping %s: %s",
@@ -2513,6 +2555,54 @@ class Pipeline:
                  f"{width}x{height}" if height else "unknown size",
                  human_bytes(size))
         self._reclaim_ts(session, chunk, source)
+
+    def _remux_with_retries(self, session: Session, chunk: Chunk,
+                            source: Path, destination: Path) -> None:
+        """Build the master, giving a failed attempt another go.
+
+        *2026-08-18.* One remux of a clean two-hour capture died on an ffmpeg
+        assertion -- ``next_dts <= 0x7fffffff`` in movenc's
+        `get_cluster_duration`, which is one sample's duration overflowing a
+        32-bit field and therefore a DTS delta of more than six hours inside a
+        two-hour file. The recording could not contain such a jump, and re-running
+        the identical command over the identical bytes afterwards produced a
+        perfect master, so whatever produced the number was not in the file. The
+        chunk was left as a `.ts` with `master_error` set and its proxy failed
+        behind it with "master is missing".
+
+        The precedent is `ClaudeCliModel.ask`: an attempt whose failure cannot be
+        classified from out here is still worth repeating when repeating it is
+        bounded and the alternative is losing the artifact for good. A remux is
+        ~40s, so the whole budget is a couple of minutes on a pool of three, and
+        each attempt stages its own `.partial.mp4` and cleans it up -- there is no
+        state carried between them.
+
+        A refusal from the disk guard is retried too, and costs nothing to retry:
+        the reservation is taken before anything is read, so a full drive fails in
+        milliseconds -- and a peer job releasing its own reservation in between is
+        the one way that failure resolves itself.
+        """
+        attempts = max(1, int(self.config.get("recording.remux_attempts", 3)))
+        verify = bool(self.config.get("recording.verify_master", True))
+        last: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                # The MP4 lives beside the .ts until the remux validates, so the
+                # transient requirement is roughly the chunk over again.
+                with self.disk_budget.reserve(
+                        source.stat().st_size, f"remuxing {chunk.label}"):
+                    remux_to_mp4(self.tools, source, destination, chunk.duration,
+                                 verify=verify)
+                return
+            except Exception as exc:
+                last = exc
+                if attempt == attempts - 1:
+                    break
+                LOG.warning("%s/%s: remux attempt %d/%d failed (%s); rebuilding "
+                            "the master from %s again",
+                            session.channel, chunk.label, attempt + 1, attempts,
+                            exc, source.name)
+        raise last or RuntimeError("remux failed")
 
     def _reclaim_ts(self, session: Session, chunk: Chunk, source: Path) -> None:
         """Drop the working copy. Only ever called after the master validated."""
@@ -2706,6 +2796,18 @@ class Pipeline:
         finally:
             proxy_lock.release()
 
+    def _master_damage(self, master: Path) -> str:
+        """Why the master cannot be read end to end, or "" if it can.
+
+        Only ever called on a failure path, so the full read it costs is paid
+        once, to replace a wrong diagnosis with the right one.
+        """
+        try:
+            verify_master_readable(self.tools, master)
+        except Exception as exc:
+            return str(exc)
+        return ""
+
     def _build_proxy(self, job: Job, session: Session, chunk: Chunk,
                      master: Path, destination: Path, height: int) -> None:
         if destination.is_file():
@@ -2737,6 +2839,22 @@ class Pipeline:
                 make_proxy(self.tools, master, destination,
                            encoder=encoder, **options)
             except Exception as exc:
+                # Before blaming the encoder, ask whether the master is readable
+                # at all. *2026-08-18:* two proxies were built from masters whose
+                # index stopped a third of the way in, so both encoders produced
+                # the same short output and the pipeline reported
+                # "h264_amf failed on real media", fell back, and spent another
+                # five minutes proving libx264 could not read the file either.
+                # An encoder cannot encode frames its input will not hand over.
+                damage = self._master_damage(master)
+                if damage:
+                    detail = (f"the master is damaged, so no encoder can build a "
+                              f"proxy from it ({damage}); the encode stopped "
+                              f"early: {exc}")
+                    self.store.update_chunk(session, chunk, proxy_status=ERROR,
+                                            proxy_error=detail)
+                    LOG.error("%s/%s: %s", session.channel, chunk.label, detail)
+                    raise RuntimeError(detail) from exc
                 # The two-second probe only proves the encoder initialises. Real
                 # source media can still defeat a hardware encoder, and a missing
                 # proxy is worse than a slow one -- so in `auto` mode, fall back.
@@ -4200,6 +4318,9 @@ class Pipeline:
                      for chunk in session.chunks), default=0.0)
             sessions.append(payload)
         summary_available, summary_reason = self._summary_capability()
+        summary_provider = str(
+            self.config.get("summary.provider") or "claude-cli").lower()
+        summary_secret = PROVIDER_SECRETS.get(summary_provider, "")
         return {
             "now": time.time(),
             "lifecycle": {
@@ -4222,7 +4343,12 @@ class Pipeline:
                 "claude_cli": bool(self.tools.claude),
                 "anthropic_api": bool(
                     self.config.secret("anthropic_api_key")),
-                "summary_provider": self.config.get("summary.provider"),
+                # Whichever key the *selected* engine needs, so the dashboard
+                # badge does not have to know which providers take keys.
+                "summary_key": bool(summary_secret
+                                    and self.config.secret(summary_secret)),
+                "summary_key_name": summary_secret,
+                "summary_provider": summary_provider,
                 "summary_available": summary_available,
                 "summary_unavailable_reason": summary_reason,
             },

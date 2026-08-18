@@ -221,6 +221,9 @@ def cmd_doctor(config: Config) -> int:
     provider = (config.get("summary.provider") or "claude-cli").lower()
     summarising = bool(config.get("summary.enabled", True)) and provider != "none"
 
+    from .models import (API_PROVIDERS, PROVIDER_SECRETS,
+                         provider_default_model)
+
     print("Tools")
     claude_needed = summarising and provider == "claude-cli"
     for name in ("ffmpeg", "ffprobe", "streamlink", "claude"):
@@ -236,21 +239,55 @@ def cmd_doctor(config: Config) -> int:
         print(f"  {name:<12} {mark:<8} {path or ''}{note}")
 
     print("\nSecrets")
-    for key, note, needed in (
+    # One row per engine key, with only the selected engine's key required. The
+    # provider table is the source of truth, so a new engine appears here
+    # without this function being edited.
+    engine_keys = [
+        ("anthropic_api_key", "anthropic-api"),
+        ("openai_api_key", "openai-api"),
+        ("kimi_api_key", "kimi-api"),
+        ("deepseek_api_key", "deepseek-api"),
+        ("openai_compatible_api_key", "openai-compatible"),
+    ]
+    rows = [
         ("deepgram_api_key", "required for transcription", transcribing),
         ("twitch_oauth_token", "optional, enables the ad-free path", False),
-        ("anthropic_api_key", "only for the anthropic-api summariser",
-         summarising and provider == "anthropic-api"),
-    ):
+    ] + [
+        (key, f"only for the {owner} summariser",
+         summarising and provider == owner)
+        for key, owner in engine_keys
+    ]
+    for key, note, needed in rows:
         present = bool(config.secret(key))
         state = "set" if present else ("MISSING" if needed else "not set")
-        print(f"  {key:<20} {state:<8} ({note})")
+        print(f"  {key:<26} {state:<8} ({note})")
         if needed and not present:
+            ok = False
+    if summarising and provider == "cli":
+        command = [str(part)
+                   for part in (config.get("summary.cli_command") or [])
+                   if str(part).strip()]
+        state = "set" if command else "MISSING"
+        detail = " ".join(command) if command else "the command to run"
+        print(f"  {'summary.cli_command':<26} {state:<8} ({detail})")
+        if not command:
             ok = False
 
     print("\nFeatures")
     print(f"  transcription {'on' if transcribing else 'off'}")
     print(f"  rundowns     {provider if summarising else 'off'}")
+    if summarising and PROVIDER_SECRETS.get(provider):
+        model = (str(config.get("summary.model", "") or "").strip()
+                 or provider_default_model(provider))
+        entry = API_PROVIDERS.get(provider)
+        base = (str(config.get("summary.base_url", "") or "").strip()
+                or (entry.base_url if entry else ""))
+        print(f"  model        "
+              f"{model or 'MISSING -- set summary.model for this engine'}")
+        if base:
+            print(f"  endpoint     {base}")
+        if not model:
+            ok = False
     print(f"  proxies      {'on' if config.get('proxies.enabled', True) else 'off'}")
 
     print("\nCapture quality")

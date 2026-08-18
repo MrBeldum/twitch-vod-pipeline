@@ -107,10 +107,19 @@ class ProductReadinessTests(unittest.TestCase):
         self.assertIn("maxlength: '120'", JS)
 
     def test_summary_capability_and_button_are_not_hardcoded_true(self):
-        self.assertIn("data.capabilities.anthropic_api", JS)
+        self.assertIn("data.capabilities.summary_available", JS)
         self.assertNotIn("=== 'anthropic-api' ? true", JS)
         self.assertIn("chunk.summary_eligible", JS)
         self.assertIn("disabled: !summaryAllowed", JS)
+
+    def test_the_engine_badge_names_whichever_engine_is_selected(self):
+        """It used to choose between two hardcoded names, so any third engine
+        was reported in the header as whichever of those two it was not."""
+        self.assertNotIn("summary_provider === 'anthropic-api'", JS)
+        self.assertIn("ENGINE_LABELS[engine]", JS)
+        from vodpipe.models import PROVIDER_NAMES
+        for provider in PROVIDER_NAMES:
+            self.assertIn(f"'{provider}'", JS, provider)
 
 
 class SettingsSchemaTests(unittest.TestCase):

@@ -353,9 +353,46 @@ transcript slice for a channel that was still recording.
 verified by actually encoding two seconds of test pattern, because a build listing an
 encoder does not prove the GPU accepts it — and fall back to `libx264` otherwise.
 
-**Summaries** run through `claude -p` against your subscription by default. Switch
-`summary.provider` to `anthropic-api` and set an API key if a heavy recording day starts
-bumping into subscription limits.
+**Summaries** run through `claude -p` against your subscription by default, and the
+engine is pluggable — see below.
+
+### Rundown engines
+
+A rundown is one background call per chunk. The default spends your Claude subscription,
+which is free until it isn't: on 2026-08-18 a seven-hour recording hit
+`You've hit your session limit` and lost the rundown for that chunk. So pick whichever
+spare capacity you have:
+
+| `summary.provider` | What it spends | Needs |
+|---|---|---|
+| `claude-cli` *(default)* | your Claude subscription, via `claude -p` | the `claude` executable |
+| `cli` | any other subscription CLI | `summary.cli_command` |
+| `anthropic-api` | an Anthropic API key | `secrets.anthropic_api_key` |
+| `kimi-api` | a Kimi (Moonshot) API key | `secrets.kimi_api_key` |
+| `deepseek-api` | a DeepSeek API key | `secrets.deepseek_api_key` |
+| `openai-api` | an OpenAI API key | `secrets.openai_api_key`, `summary.model` |
+| `openai-compatible` | anything else OpenAI-shaped | `summary.base_url`, `secrets.openai_compatible_api_key` |
+| `none` | nothing — rundowns off | |
+
+`summary.model` names the model **for whichever engine is selected**, and blank means that
+engine's own default (`kimi-k3`, `deepseek-v4-pro`, `claude-sonnet-5`). If the name is
+wrong — or missing where there is no sensible default — the error lists the models the
+endpoint actually offers, because model ids move faster than this README does.
+
+`openai-compatible` covers OpenRouter, Groq, Together, and a local llama.cpp or Ollama
+server: set `summary.base_url` to the API root, e.g. `http://127.0.0.1:11434/v1`.
+
+**A ChatGPT or Gemini subscription has no API of its own** — those sell a seat, not an
+endpoint — so use `cli` with that vendor's own command:
+
+```json
+"summary": { "provider": "cli", "cli_command": ["codex", "exec", "--sandbox", "read-only"] }
+```
+
+The transcript always arrives on the command's **stdin**, because a two-hour transcript is
+far past the Windows command-line length limit, and the rundown is whatever it writes to
+**stdout**. Put `{system}` in an argument and the instruction goes there instead of being
+prepended to stdin — `["gemini", "-p", "{system}"]`.
 
 ---
 
@@ -523,7 +560,8 @@ Everything lives in `config.json` next to the app — gitignored, created on fir
 is in `vodpipe/config.py`.
 
 Secrets resolve config first, then environment (`DEEPGRAM_API_KEY`, `TWITCH_OAUTH_TOKEN`,
-`ANTHROPIC_API_KEY`), so a shell export works too.
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `KIMI_API_KEY`, `DEEPSEEK_API_KEY`,
+`OPENAI_COMPATIBLE_API_KEY`), so a shell export works too.
 
 The validator is total and transactional — a rejected save changes nothing — and it is
 strict about unknown keys, so a typo is refused rather than silently ignored. The one
@@ -617,8 +655,28 @@ What happens when things go wrong, since a recorder is judged on its bad days:
   Falling behind — an API outage, a late key, queue congestion — leaves it explicitly
   incomplete rather than published as finished. Catch-up is bounded and stops the moment
   a pass fails to advance.
-- **A `.ts` is deleted only after its MP4 validates** (readable video stream, plausible
-  duration). A failed or incompatible remux keeps the recording.
+- **A `.ts` is deleted only after its MP4 is read from end to end.** The header check
+  — readable video stream, plausible duration, matching stream inventory — is not enough
+  on its own: on 2026-08-18 two masters passed it while carrying a single wrong byte in
+  their index, one silently truncating playback to 44% of the file and the other
+  misaddressing every sample after a certain point. Both looked perfect to `ffprobe`'s
+  summary, and both had their `.ts` deleted. So before a master is published, its packets
+  are counted: it must read without ffmpeg reporting a single error, and its video must
+  deliver as many frames as the file itself claims to hold. One full pass, 3–14s for a
+  two-hour chunk here against a 30–40s remux, and it is the only check that can see this.
+  `recording.verify_master` turns it off; if you do that, turn on
+  `recording.keep_ts_after_remux`.
+- **A failed remux is tried again** (`recording.remux_attempts`, default 3). A remux is
+  deterministic work over bytes already on disk, so a failure is either permanent — and
+  costs a bounded couple of minutes to confirm — or a one-off. A one-off used to cost the
+  master permanently: one chunk of that same recording died on an ffmpeg assertion, and
+  re-running the identical command over the identical bytes afterwards produced a perfect
+  master.
+- **A short proxy names the master, not the encoder.** If an encode stops early, the
+  master is read through before anything is blamed. Both proxies of a damaged master used
+  to be reported as "h264_amf failed on real media", fall back to libx264, and spend
+  another five minutes proving software could not read the file either — an encoder
+  cannot encode frames its input will not hand over.
 - **Masters are stream-copy H.264 with explicit stream mapping.** A non-H.264 source is
   refused rather than silently re-encoded or dropped, and extra audio tracks are carried
   through instead of being lost to ffmpeg's default selection.

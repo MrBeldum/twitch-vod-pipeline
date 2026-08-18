@@ -17,6 +17,7 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 from .channels import InvalidChannel, parse_channel
+from .models import PROVIDER_NAMES
 from .quality import LOW_QUALITY_POLICIES
 from .util import safe_name_component
 
@@ -191,6 +192,41 @@ def _proxy_url(value: Any, path: str) -> str:
     return text
 
 
+def _api_base_url(value: Any, path: str) -> str:
+    """The root of an OpenAI-shaped API, or empty to use the provider's own.
+
+    Checked here rather than at request time because a base URL with a typo
+    fails once per rundown, in the background, hours after it was typed.
+    """
+    if not isinstance(value, str):
+        raise ConfigError(f"{path} must be text")
+    text = _reject_unusable_characters(value.strip(), path)
+    if not text:
+        return ""
+    if len(text) > 512:
+        raise ConfigError(f"{path} is too long")
+    try:
+        parsed = urlparse(text)
+    except ValueError as exc:
+        raise ConfigError(f"{path} is not a valid URL") from exc
+    if parsed.scheme.lower() not in ("http", "https"):
+        raise ConfigError(f"{path} must start with http:// or https://")
+    try:
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise ConfigError(f"{path} has an invalid port") from exc
+    if not hostname:
+        raise ConfigError(
+            f"{path} must include a host, e.g. https://openrouter.ai/api/v1")
+    if port is not None and not (0 < port <= 65535):
+        raise ConfigError(f"{path} has an invalid port")
+    if parsed.query or parsed.fragment:
+        raise ConfigError(
+            f"{path} must be the API root, with no query string or fragment")
+    return text.rstrip("/")
+
+
 def _channel_list(value: Any, path: str) -> list[str]:
     if not isinstance(value, list):
         raise ConfigError(f"{path} must be a list")
@@ -228,6 +264,8 @@ SCHEMA: dict[str, Callable[[Any, str], Any]] = {
     "recording.twitch_low_latency": _boolean,
     "recording.keep_ts_after_remux": _boolean,
     "recording.streamlink_no_config": _boolean,
+    "recording.verify_master": _boolean,
+    "recording.remux_attempts": _number(1, 10, integer=True),
     "recording.ffmpeg_grace_seconds": _number(5, 3600),
     "recording.startup_timeout_seconds": _number(0, 3600),
     "recording.min_height": _number(0, 4320, integer=True),
@@ -263,8 +301,11 @@ SCHEMA: dict[str, Callable[[Any, str], Any]] = {
     "snapshots.max_per_session": _number(1, 16, integer=True),
 
     "summary.enabled": _boolean,
-    "summary.provider": _choice("claude-cli", "anthropic-api", "none"),
-    "summary.model": _text(allow_empty=False, max_length=64),
+    "summary.provider": _choice(*PROVIDER_NAMES),
+    # Empty is legal and means "the selected engine's default model".
+    "summary.model": _text(max_length=64),
+    "summary.base_url": _api_base_url,
+    "summary.cli_command": _string_list,
     "summary.timeout_seconds": _number(10, 7200),
     "summary.max_tokens": _number(256, 200000, integer=True),
     "summary.max_retries": _number(1, 10, integer=True),
@@ -289,6 +330,10 @@ SCHEMA: dict[str, Callable[[Any, str], Any]] = {
     "secrets.deepgram_api_key": _text(max_length=512),
     "secrets.twitch_oauth_token": _text(max_length=512),
     "secrets.anthropic_api_key": _text(max_length=512),
+    "secrets.openai_api_key": _text(max_length=512),
+    "secrets.kimi_api_key": _text(max_length=512),
+    "secrets.deepseek_api_key": _text(max_length=512),
+    "secrets.openai_compatible_api_key": _text(max_length=512),
 
     "tools.ffmpeg": _text(),
     "tools.ffprobe": _text(),
@@ -396,6 +441,21 @@ def _cross_field(data: dict[str, Any]) -> None:
 
     if get("proxies.height", 2) % 2 != 0:
         raise ConfigError("proxies.height must be even (H.264 requires it)")
+
+    if get("summary.enabled", True):
+        provider = str(get("summary.provider", "claude-cli") or "").lower()
+        # Both of these fail at rundown time otherwise -- in the background,
+        # hours after the setting was saved, once per chunk.
+        if provider == "openai-compatible" and not str(
+                get("summary.base_url", "") or "").strip():
+            raise ConfigError(
+                "summary.base_url is required when summary.provider is "
+                "openai-compatible: there is no endpoint to send the rundown to")
+        if provider == "cli" and not [
+                part for part in (get("summary.cli_command") or []) if part.strip()]:
+            raise ConfigError(
+                "summary.cli_command is required when summary.provider is cli: "
+                "there is no command to run")
 
     host = get("dashboard.host", "127.0.0.1")
     if host not in ("127.0.0.1", "localhost"):

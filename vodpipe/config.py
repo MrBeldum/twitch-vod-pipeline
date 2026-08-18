@@ -25,7 +25,9 @@ APP_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = APP_ROOT / "config.json"
 
 # Keys whose values are masked whenever config is handed to the browser.
-SECRET_KEYS = {"deepgram_api_key", "twitch_oauth_token", "anthropic_api_key"}
+SECRET_KEYS = {"deepgram_api_key", "twitch_oauth_token",
+               "anthropic_api_key", "openai_api_key", "kimi_api_key",
+               "deepseek_api_key", "openai_compatible_api_key"}
 
 # Sentinels the dashboard round-trips for secret fields.
 MASK = "__unchanged__"      # keep whatever is stored
@@ -82,6 +84,19 @@ DEFAULTS: dict[str, Any] = {
         # how recordings are made. Off by default because that config is also a
         # legitimate place for the user's own token and plugin settings.
         "streamlink_no_config": False,
+        # Read the finished master end to end before publishing it, and before
+        # the `.ts` it was built from is deleted. Costs one pass over the file
+        # (3-14s for a two-hour chunk here, against a 30-40s remux) and is the
+        # only check that can see an index which disagrees with the data behind
+        # it -- the failure that cost two masters on 2026-08-18. Turn it off only
+        # if the drive makes it painful, and keep `keep_ts_after_remux` on if you
+        # do.
+        "verify_master": True,
+        # How many times to build the master before giving up on a chunk. A
+        # remux is deterministic work over bytes already on disk, so a failure is
+        # either permanent -- and costs a bounded couple of minutes to confirm --
+        # or a one-off, and a one-off used to cost the master permanently.
+        "remux_attempts": 3,
     },
     "proxies": {
         "enabled": True,
@@ -136,8 +151,25 @@ DEFAULTS: dict[str, Any] = {
     },
     "summary": {
         "enabled": True,
-        "provider": "claude-cli",   # claude-cli | anthropic-api | none
-        "model": "claude-sonnet-5",
+        # claude-cli | cli | anthropic-api | kimi-api | deepseek-api |
+        # openai-api | openai-compatible | none. See models.PROVIDER_NAMES,
+        # which is where the list actually lives.
+        "provider": "claude-cli",
+        # Provider-scoped: the model for whichever engine is selected. Blank
+        # means that engine's own default (kimi-k3, deepseek-v4-pro,
+        # claude-sonnet-5 ...), which is what makes switching engines a
+        # one-field change. A provider with no default reports the model list
+        # its endpoint actually offers rather than guessing.
+        "model": "",
+        # Only for `openai-compatible`: the root of an OpenAI-shaped API, e.g.
+        # "https://openrouter.ai/api/v1" or "http://127.0.0.1:11434/v1". The
+        # named providers carry their own.
+        "base_url": "",
+        # Only for `cli`: the command that runs a subscription CLI. The
+        # transcript always goes to it on stdin; a token containing {system}
+        # receives the instruction, and if none does it is prepended to stdin.
+        # e.g. ["codex", "exec", "--sandbox", "read-only", "-"]
+        "cli_command": [],
         "timeout_seconds": 900,
         "max_tokens": 8000,
         # Attempts per rundown, shared by both engines and bounded by
@@ -202,7 +234,14 @@ DEFAULTS: dict[str, Any] = {
     "secrets": {
         "deepgram_api_key": "",
         "twitch_oauth_token": "",
+        # One per rundown engine. Separate keys rather than a single
+        # "summary key" so switching engines does not mean re-pasting the one
+        # you were using before, and so `doctor` can say which is missing.
         "anthropic_api_key": "",
+        "openai_api_key": "",
+        "kimi_api_key": "",
+        "deepseek_api_key": "",
+        "openai_compatible_api_key": "",
     },
     "tools": {
         "ffmpeg": "",

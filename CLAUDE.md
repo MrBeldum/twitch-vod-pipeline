@@ -18,7 +18,8 @@ shared machinery is identical in both — capture, chunking, remux, proxies, rol
 rundowns, snapshots, the VOD path, the network proxy — so a fix to any of it belongs in
 both repositories.**
 
-Status: **built, audited, hardened, and proven against real 8-hour recordings.** Two audits
+Status: **built, audited, hardened, and proven against real 8-hour recordings** -- three
+live tests, each of which found defects no fixture could have. Two audits
 were worked through (neither document is retained in this tree; `tests/test_audit_20260814.py`
 and `test_confirmed_audit_fixes.py` are what they left behind); every finding was verified
 and closed or confirmed already-handled. The full suite is
@@ -48,6 +49,30 @@ fixed and covered by `tests/test_live_failures_20260816.py`:
 | `ffmpeg exited 4294967274 … Error muxing a packet` ×3 in 15 min | `-map 0` captured Twitch's `timed_id3`, whose DTS is not discontinuity-corrected | every network stall killed the recording |
 | `claude -p failed (1):` — nothing after the colon | detail read stderr only; a `--print` CLI explains itself on stdout | the one diagnostic message carried no information |
 | a rundown lost to one transient engine failure | the CLI transport had no retry while the API transport had four | c000's rundown was permanently `error` |
+
+**Third live test, 2026-08-18 (hasanabi ~7h, then zy0xxx ~7h, 8 chunks).** Capture and
+transcription were flawless across both sessions -- 8 chunks, ~110,000 words, every seam
+stitched. Three defects, all in what happens to a chunk *after* it closes, and every one
+of them reported as something it was not. Fixed and locked in by
+`tests/test_live_failures_20260818.py`:
+
+| Symptom in the log | Root cause | Cost |
+|---|---|---|
+| `remux failed: Assertion next_dts <= 0x7fffffff failed at movenc.c:1236` | one sample's duration overflowed a 32-bit field, i.e. a DTS gap of >6h inside a 2h file; **not reproducible** -- re-running the identical command over the identical bytes now produces a perfect master | c002 kept only a `.ts`; its proxy then failed with "master is missing" |
+| `h264_amf failed on real media (covers 2765s but expected 7202s)` ×2 chunks ×2 encoders | the *master* was damaged, not the encoder: one `stsc` entry misaddressed every sample after it, one `co64` entry had a stray high bit and the demuxer stopped dead at 44% | 2 masters silently corrupt, their `.ts` already deleted; 20 minutes spent proving libx264 could not read them either |
+| `claude -p failed (1): You've hit your session limit · resets 6:10am` ×3 | the only engines on offer were the user's Claude subscription and an Anthropic key | c000's rundown lost; nothing to fall back to |
+
+**The corruption itself is unexplained and precisely characterised.** Both bad masters
+carry byte-level damage in the `moov`, in different tables, hours apart, from a process
+whose input was provably clean (streamlink logged zero sequence gaps and zero ad breaks
+across the whole recording; the surviving `.ts` re-remuxes perfectly today). zy0xxx c001's
+`co64[136075]` reads `2**45 + 3242408537` -- a **single flipped bit**. zy0xxx c000's
+`stsc[47056].first_chunk` reads `8192` where `59839` belongs. Five other masters from the
+same two sessions are perfect. No WHEA, disk or NTFS errors are logged, which is expected:
+non-ECC memory does not report a flip. **Do not go looking for a logic bug in the muxer to
+explain this** -- a logic bug is systematic, and this is one wrong value in 310,000. If it
+recurs, run a memory test before reading any more code. What the pipeline can do about it
+is detect it, which is what it now does.
 
 **Editing the output in Premiere, 2026-08-17.** The user imported a finished chunk and
 found the one feature that does not work: *delete all fillers* reported nothing to delete
@@ -148,6 +173,28 @@ Implementation notes worth knowing before changing anything:
   audio only. `+discardcorrupt` covers the other half of the same event
   (`Packet corrupt (stream = 1)` in the same log) — dropping a corrupt packet costs a
   frame, refusing it costs the broadcast.
+- **The rundown engine is pluggable across four transports, and the list lives in
+  `models.PROVIDER_NAMES`.** *2026-08-18, at the user's request after the session-limit
+  failure.* `claude-cli` and `cli` spend a subscription; `anthropic-api` speaks the
+  Messages API; `kimi-api`, `deepseek-api`, `openai-api` and `openai-compatible` are one
+  OpenAI-shaped `/chat/completions` class pointed at different base URLs and keys, because
+  Kimi and DeepSeek both publish OpenAI-compatible APIs and three classes would have been
+  three copies of the same bug surface. Three things are worth knowing before changing any
+  of it:
+  - **`summary.model` is provider-scoped and blank means the provider's default.** That is
+    what makes switching engines a one-field change. A provider with no default (OpenAI,
+    or a compatible endpoint) does not guess: the transport asks the endpoint for its own
+    model list and puts the real ids in the error, because model names move faster than
+    this repository does.
+  - **`cli` is how a ChatGPT or Gemini subscription is used.** Those sell a seat, not an
+    endpoint; their CLIs are the supported way in. The contract is deliberately minimal --
+    the transcript goes on stdin (a two-hour transcript is far past the Windows
+    command-line limit), the rundown is stdout, and a `{system}` token in any argument
+    receives the instruction. Do not grow this into a per-vendor adapter.
+  - **Retiring or renaming a provider needs `schema.RETIRED_PATHS`,** the same as any
+    other key; `summary.provider` is validated as a closed choice built from
+    `PROVIDER_NAMES`, so a name dropped from that tuple stops an installed config from
+    loading.
 - **A rundown engine gets more than one attempt** (`summary.max_retries`, default 3,
   bounded by `summary.timeout_seconds` overall). *Added 2026-08-16.* The API transport
   retried and the `claude -p` transport did not, which was backwards: the CLI is the
@@ -171,6 +218,35 @@ Implementation notes worth knowing before changing anything:
   typical MPEG-TS (start ≈1.4s) skipped the first 1.4s of every audio slice and truncated
   tail requests. Verified empirically; `tests/test_media_timeline.py` uses a fixture with
   a deliberately large nonzero PTS. Do not reintroduce that offset.
+- **A master is read end to end before its `.ts` is deleted, and only then.**
+  *2026-08-18.* `validate_master` reads the container header -- stream inventory,
+  dimensions, declared durations -- and both corrupt masters of that day satisfied it
+  perfectly, so the recording was deleted in favour of a file that could not be played
+  past 44% of its length. `verify_master_readable` walks the packets instead, and applies
+  **two rules, both required, because each of the two files passed the other**: it must
+  read without ffprobe reporting anything (the misaddressed-samples file delivers the full
+  packet count at the right timestamps, pointing at rubbish), and its video packets must
+  span the duration the file itself declares (the stray-high-bit file reads in perfect
+  silence, because as far as the demuxer is concerned the index simply ends). The span is
+  compared against the *stream's own* declared duration rather than the recorder's
+  measurement of the chunk -- one question, one frame of reference, clear of the
+  measurement noise `SHORT_READ_TOLERANCE` exists to absorb.
+  **It runs exactly where a `.ts` is about to be discarded** (`_verify_before_reclaim`),
+  not on every master recovery walks past: it costs one full pass, 3-14s for a two-hour
+  chunk on this machine against a 30-40s remux, and re-reading fifty gigabytes of finished
+  masters at every start to learn nothing would turn startup into a disk scrub.
+- **A failed remux is tried again** (`recording.remux_attempts`, default 3). The
+  precedent is the `claude -p` retry: a failure that cannot be classified from out here is
+  still worth repeating when repeating it is bounded and the alternative is losing the
+  artifact permanently. The proof it was worth adding is that hasanabi c002's assertion
+  does not reproduce -- the same command over the same bytes succeeds now, so a second
+  attempt would have saved the master on the night. Each attempt stages its own
+  `.partial.mp4`, so nothing is carried between them.
+- **A short proxy accuses the master before it accuses the encoder.** The encoder
+  fallback (`auto` -> libx264) exists because a hardware encoder can be defeated by real
+  media, but an encoder cannot encode frames its input will not hand over. `_master_damage`
+  reads the source through on the failure path only, and a damaged master is named as such
+  instead of costing another five-minute software encode that fails identically.
 - **Chunk state is per-artifact** (`master_error`, `proxy_error`, `transcript_error`,
   `summary_error`). A single shared field let a successful remux erase a transcription
   failure.
@@ -386,7 +462,7 @@ Implementation notes worth knowing before changing anything:
 | 3 | Early cut | **Non-destructive snapshot** — recording continues untouched. |
 | 4 | Control surface | **Local web dashboard** on localhost. |
 | 5 | Summary style | **Objective rundown only.** No clip recommendations, no editorializing. User was explicit. |
-| 6 | Summary engine | `claude -p` headless against the user's existing subscription. Pluggable so an API key can replace it. |
+| 6 | Summary engine | **Pluggable, `claude -p` by default.** Eight engines: the Claude subscription CLI, any other subscription CLI (`cli` -- this is the ChatGPT/Gemini route), the Anthropic API, Kimi, DeepSeek, OpenAI, any OpenAI-compatible endpoint, or off. Added 2026-08-18 after `claude -p` hit its session limit mid-recording and there was nothing to fall back to. |
 | 7 | Channels | **Arbitrary, user-added at runtime. Do not hardcode any channel.** User said "various streamers, don't assume which." |
 | 8 | Storage | Masters → Desktop, kept until manually cleared. Proxies → auto-deleted after 1 day. All adjustable. |
 | 9 | Language | Python for new code. The retired C# predecessor is archived privately at `github.com/MrBeldum/vod-transcript`. |

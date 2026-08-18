@@ -472,6 +472,7 @@ class OwnershipAndLeaseTests(PipelineFixture):
 
         with self.pipeline.read_lease([source]), \
                 patch("vodpipe.pipeline.validate_master"), \
+                patch("vodpipe.pipeline.verify_master_readable"), \
                 patch("vodpipe.pipeline.video_dimensions", return_value=(1, 1)), \
                 patch.object(self.pipeline, "_recover_artifacts", return_value=[]):
             self.pipeline._recover_chunk(self.session, chunk, owner)

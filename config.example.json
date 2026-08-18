@@ -1,9 +1,13 @@
 {
-  "_comment": "Copy to config.json and fill in. Every key is optional: anything absent falls back to the defaults in vodpipe/config.py. You can also set secrets in the dashboard instead of here, or via the DEEPGRAM_API_KEY / TWITCH_OAUTH_TOKEN / ANTHROPIC_API_KEY environment variables. network.proxy is an optional HTTP/SOCKS proxy (e.g. socks5://127.0.0.1:1080) used for live capture, VOD download and live-status probes -- set it to reach Twitch and record source quality from a region it has left, such as South Korea, without a full VPN.",
+  "_comment": "Copy to config.json and fill in. Every key is optional: anything absent falls back to the defaults in vodpipe/config.py. You can also set secrets in the dashboard instead of here, or via the DEEPGRAM_API_KEY / TWITCH_OAUTH_TOKEN / ANTHROPIC_API_KEY / OPENAI_API_KEY / KIMI_API_KEY / DEEPSEEK_API_KEY / OPENAI_COMPATIBLE_API_KEY environment variables. network.proxy is an optional HTTP/SOCKS proxy (e.g. socks5://127.0.0.1:1080) used for live capture, VOD download and live-status probes -- set it to reach Twitch and record source quality from a region it has left, such as South Korea, without a full VPN. Rundown engines -- provider: claude-cli | cli | anthropic-api | kimi-api | deepseek-api | openai-api | openai-compatible | none. model names the model for whichever provider is selected; leave it blank for that provider's default. base_url is only for openai-compatible (any OpenAI-shaped endpoint, e.g. https://openrouter.ai/api/v1 or http://127.0.0.1:11434/v1). cli_command is only for cli, which is how a ChatGPT or Gemini subscription is used -- the transcript arrives on the command's stdin, and a {system} token in an argument receives the instruction.",
   "secrets": {
     "deepgram_api_key": "",
     "twitch_oauth_token": "",
-    "anthropic_api_key": ""
+    "anthropic_api_key": "",
+    "openai_api_key": "",
+    "kimi_api_key": "",
+    "deepseek_api_key": "",
+    "openai_compatible_api_key": ""
   },
   "channels": [],
   "paths": {
@@ -15,7 +19,9 @@
     "quality": "best",
     "free_space_floor_gb": 50,
     "hard_reserve_gb": 10,
-    "keep_ts_after_remux": false
+    "keep_ts_after_remux": false,
+    "verify_master": true,
+    "remux_attempts": 3
   },
   "proxies": {
     "enabled": true,
@@ -40,7 +46,9 @@
   "summary": {
     "enabled": true,
     "provider": "claude-cli",
-    "model": "claude-sonnet-5",
+    "model": "",
+    "base_url": "",
+    "cli_command": [],
     "max_tokens": 8000
   },
   "watcher": {

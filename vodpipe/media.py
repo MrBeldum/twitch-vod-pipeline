@@ -7,6 +7,7 @@ MP4 remux and every seek we perform are normalised against it.
 
 from __future__ import annotations
 
+import json
 import shutil
 import threading
 import math
@@ -672,6 +673,101 @@ def validate_master(tools: Tools, path: Path, expected_duration: float = 0.0,
     _assert_stream_coverage(probe, expected_duration, "master", tolerance)
 
 
+# How long a full packet census may take. Measured on this machine: a 7.4 GB
+# two-hour master reads in 3-14s, so this is a stuck-process bound, not a budget.
+VERIFY_TIMEOUT_SECONDS = 3600.0
+
+
+def verify_master_readable(tools: Tools, path: Path,
+                           timeout: float = VERIFY_TIMEOUT_SECONDS) -> None:
+    """Read a master end to end and prove its index and its data agree.
+
+    *Added 2026-08-18, after two masters were published and their `.ts` deleted
+    on a check that could not see the damage.* `validate_master` reads the
+    container header -- stream inventory, dimensions, declared durations -- and
+    both broken files satisfied it perfectly:
+
+    * one had a single chunk offset in `co64` with bit 45 set, so ffmpeg's
+      demuxer silently stopped delivering packets at 3159s of a 7199s file while
+      `mvhd`, `tkhd` and every stream duration still read 7199s;
+    * the other had one `stsc` `first_chunk` reading 8192 where 59839 belonged,
+      so every sample after it mapped to the wrong bytes -- 31 MB of
+      ``Invalid NAL unit size`` and ``wrong sample count`` on a file whose
+      header was immaculate.
+
+    Neither is reachable from metadata, so this walks the packets. Two rules,
+    and both are needed because each broken file passed the other:
+
+    * **it must read without ffprobe reporting anything.** The second file is
+      caught here and nowhere else: it delivers the full packet count, at the
+      right timestamps, pointing at rubbish.
+    * **its video packets must span the duration the file itself claims.** The
+      first file is caught here and nowhere else: it reads in silence, because
+      as far as the demuxer is concerned the index simply ends.
+
+    The comparison is deliberately against the stream's *own* declared duration
+    rather than the recorder's measurement of the chunk. This asks one question
+    -- does the file deliver what it says it holds? -- and asking it in a single
+    frame of reference keeps it clear of the measurement noise that
+    `SHORT_READ_TOLERANCE` exists to absorb elsewhere. Whether the master covers
+    the *recording* is `validate_master`'s question, and it still asks it.
+
+    Any doubt is a failure. The caller is about to delete the only other copy of
+    this video, and a retained `.ts` beside a chunk marked failed is recoverable
+    in a way a deleted `.ts` beside a corrupt master is not.
+    """
+    result = run(
+        [tools.ffprobe, "-hide_banner", "-v", "error", "-count_packets",
+         "-show_entries",
+         "stream=index,codec_type,nb_read_packets,r_frame_rate,duration",
+         "-of", "json", str(path)],
+        timeout=timeout,
+    )
+    noise = result.stderr.strip()
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"master could not be read end to end (ffprobe exited "
+            f"{result.returncode}): {noise[-300:] or 'no detail'}")
+    if noise:
+        lines = noise.splitlines()
+        raise RuntimeError(
+            f"master does not read cleanly: {len(lines)} demuxer/decoder "
+            f"error(s) while reading it, first: {lines[0][:200]}")
+    try:
+        probe = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"master packet census was unreadable: {exc}") from exc
+
+    streams = probe.get("streams") if isinstance(probe, dict) else None
+    if not isinstance(streams, list):
+        raise RuntimeError("master packet census returned no streams")
+    video = [stream for stream in streams
+             if isinstance(stream, dict) and stream.get("codec_type") == "video"]
+    if not video:
+        raise RuntimeError("master packet census found no video stream")
+
+    for stream in video:
+        label = f"master video stream {stream.get('index', '?')}"
+        packets = _probe_number(stream.get("nb_read_packets"))
+        if packets is None or packets <= 0:
+            raise RuntimeError(f"{label} delivered no packets")
+        declared = _stream_duration(stream)
+        fps = _stream_frame_rate(stream)
+        if declared is None or fps <= 0:
+            # Nothing to compare against. The clean-read rule above still ran,
+            # and inventing a frame rate here would only invent a verdict.
+            continue
+        span = packets / fps
+        shortfall = declared - span
+        limit = allowed_shortfall(declared)
+        if shortfall - limit > 1e-9:
+            raise RuntimeError(
+                f"{label} declares {declared:.3f}s but its index only reaches "
+                f"{span:.3f}s ({int(packets)} packets at {fps:g} fps) -- short "
+                f"by {shortfall:.3f}s, more than the {limit:.3f}s allowed; the "
+                f"file is damaged")
+
 def _join_piece_shortfall(expected_duration: float) -> float:
     """Packet/mux slop accepted only for temporary MPEG-TS join pieces."""
     return max(MIN_SHORTFALL_SECONDS,
@@ -703,12 +799,18 @@ def video_dimensions(tools: Tools, path: Path) -> tuple[int, int]:
 
 
 def remux_to_mp4(tools: Tools, source: Path, destination: Path,
-                 expected_duration: float = 0.0) -> list[str]:
+                 expected_duration: float = 0.0, *,
+                 verify: bool = True) -> list[str]:
     """Container-only rewrite of a finished .ts into a Premiere-friendly MP4.
 
     `make_zero` pins the output to start at 0 so master time and transcript time
     agree; `faststart` puts the index up front so Premiere opens it instantly.
     Returns the list of streams deliberately left out.
+
+    `verify` runs `verify_master_readable` over the candidate before it is
+    published. It costs one full read -- 3-14s for a two-hour chunk on this
+    machine, against a 30-40s remux -- and it is the only thing standing between
+    a silently damaged index and the deletion of the `.ts` it was built from.
     """
     destination.parent.mkdir(parents=True, exist_ok=True)
     probe = ffprobe_json(tools.ffprobe, source)
@@ -743,6 +845,8 @@ def remux_to_mp4(tools: Tools, source: Path, destination: Path,
             raise RuntimeError(f"remux failed: {result.stderr.strip()[-800:]}")
         validate_master(tools, temp, expected_duration,
                         required_topology=required)
+        if verify:
+            verify_master_readable(tools, temp)
         temp.replace(destination)
     finally:
         # Covers the timeout path too, where `run` raises before we get here.

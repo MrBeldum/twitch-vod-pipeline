@@ -507,19 +507,37 @@ function renderJobs(data) {
 
 /* ------------------------------------------------------------------ header */
 
+// Keep in step with models.PROVIDER_NAMES.
+const ENGINE_LABELS = {
+  'claude-cli': 'claude -p',
+  'anthropic-api': 'Anthropic API',
+  'kimi-api': 'Kimi API',
+  'deepseek-api': 'DeepSeek API',
+  'openai-api': 'OpenAI API',
+  'openai-compatible': 'OpenAI-compatible',
+  cli: 'CLI',
+  none: 'Rundowns off',
+};
+
 function renderHeader(data) {
   const caps = $('#capabilities');
   caps.textContent = '';
+  const engine = data.capabilities.summary_provider || 'claude-cli';
   const items = [
-    ['Deepgram', data.capabilities.deepgram],
-    ['Twitch token', data.capabilities.twitch_token],
-    [data.capabilities.summary_provider === 'anthropic-api' ? 'Anthropic API' : 'claude -p',
-      data.capabilities.summary_provider === 'anthropic-api'
-        ? data.capabilities.anthropic_api
-        : data.capabilities.claude_cli],
+    ['Deepgram', data.capabilities.deepgram, ''],
+    ['Twitch token', data.capabilities.twitch_token, ''],
+    // The rundown badge reports the engine that is actually selected and whether
+    // *it* can run, rather than choosing between two hardcoded names.
+    [ENGINE_LABELS[engine] || engine,
+      data.capabilities.summary_available,
+      data.capabilities.summary_unavailable_reason || ''],
   ];
-  for (const [label, on] of items) {
-    caps.append(el('span', { class: `badge ${on ? 'on' : 'off'}`, title: on ? 'configured' : 'not configured', text: label }));
+  for (const [label, on, why] of items) {
+    caps.append(el('span', {
+      class: `badge ${on ? 'on' : 'off'}`,
+      title: on ? 'configured' : (why || 'not configured'),
+      text: label,
+    }));
   }
 
   const disk = $('#disk');
@@ -562,7 +580,15 @@ const SETTINGS_SCHEMA = [
     { path: 'secrets.twitch_oauth_token', label: 'Twitch OAuth token', type: 'password',
       desc: 'Optional. With Twitch Turbo this is the reliable ad-free path.' },
     { path: 'secrets.anthropic_api_key', label: 'Anthropic API key', type: 'password',
-      desc: 'Only needed if the summary provider is set to anthropic-api.' },
+      desc: 'Only needed if the rundown engine is anthropic-api.' },
+    { path: 'secrets.kimi_api_key', label: 'Kimi (Moonshot) API key', type: 'password',
+      desc: 'Only needed if the rundown engine is kimi-api. Keys: platform.kimi.ai' },
+    { path: 'secrets.deepseek_api_key', label: 'DeepSeek API key', type: 'password',
+      desc: 'Only needed if the rundown engine is deepseek-api. Keys: platform.deepseek.com' },
+    { path: 'secrets.openai_api_key', label: 'OpenAI API key', type: 'password',
+      desc: 'Only needed if the rundown engine is openai-api.' },
+    { path: 'secrets.openai_compatible_api_key', label: 'Other endpoint API key', type: 'password',
+      desc: 'Only needed if the rundown engine is openai-compatible.' },
   ]},
   { title: 'Recording', fields: [
     { path: 'recording.chunk_seconds', label: 'Chunk length (seconds)', type: 'number' },
@@ -608,8 +634,18 @@ const SETTINGS_SCHEMA = [
   ]},
   { title: 'Summary', fields: [
     { path: 'summary.enabled', label: 'Write rundowns', type: 'checkbox' },
-    { path: 'summary.provider', label: 'Engine', type: 'select', options: ['claude-cli', 'anthropic-api', 'none'] },
-    { path: 'summary.model', label: 'Model (API only)', type: 'text' },
+    { path: 'summary.provider', label: 'Engine', type: 'select',
+      options: ['claude-cli', 'anthropic-api', 'kimi-api', 'deepseek-api', 'openai-api', 'openai-compatible', 'cli', 'none'],
+      desc: 'claude-cli and cli spend a subscription; the rest spend an API key. '
+            + 'A ChatGPT or Gemini subscription has no API of its own \u2014 use cli with that vendor\u2019s command.' },
+    { path: 'summary.model', label: 'Model (API engines)', type: 'text',
+      desc: 'Names the model for whichever engine is selected. Leave it blank for that engine\u2019s default '
+            + '(kimi-k3, deepseek-v4-pro, claude-sonnet-5). If the name is wrong, the error lists what the endpoint actually offers.' },
+    { path: 'summary.base_url', label: 'Endpoint (openai-compatible only)', type: 'text',
+      desc: 'The API root of any OpenAI-shaped server, e.g. https://openrouter.ai/api/v1 or http://127.0.0.1:11434/v1.' },
+    { path: 'summary.cli_command', label: 'Command (cli engine only)', type: 'command',
+      desc: 'The subscription CLI to run, e.g. codex exec --sandbox read-only. The transcript arrives on its stdin; '
+            + 'put {system} in an argument to pass the instruction there instead of prepending it to stdin.' },
     { path: 'summary.min_words', label: 'Minimum words for a rundown', type: 'number' },
     { path: 'summary.max_tokens', label: 'Maximum rundown output tokens', type: 'number' },
     { path: 'summary.max_retries', label: 'Rundown attempts', type: 'number',
@@ -635,6 +671,34 @@ const SETTINGS_SCHEMA = [
 ];
 
 const dig = (obj, path) => path.split('.').reduce((node, key) => (node ?? {})[key], obj);
+
+// argv <-> one editable line. Quotes are honoured so an argument containing a
+// space stays one argument; everything else splits on whitespace.
+const joinCommand = (parts) => (Array.isArray(parts) ? parts : [])
+  .map(part => (/[\s"]/.test(part) ? `"${String(part).replace(/"/g, '\\"')}"` : part))
+  .join(' ');
+
+function splitCommand(text) {
+  const parts = [];
+  let current = '';
+  let quoted = false;
+  let started = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (character === '\\' && quoted && text[index + 1] === '"') {
+      current += '"'; index += 1; started = true; continue;
+    }
+    if (character === '"') { quoted = !quoted; started = true; continue; }
+    if (!quoted && /\s/.test(character)) {
+      if (started) { parts.push(current); current = ''; started = false; }
+      continue;
+    }
+    current += character;
+    started = true;
+  }
+  if (started) parts.push(current);
+  return parts;
+}
 
 function buildSettings(config) {
   const root = $('#settings-fields');
@@ -674,6 +738,12 @@ function buildSettings(config) {
           ]));
           continue;
         }
+      } else if (field.type === 'command') {
+        // A list of argv parts, edited as one line. Splitting here rather than in
+        // Python keeps the stored config a real list -- no shell ever sees this
+        // string, so an argument with a space has to survive as one argument.
+        input = el('input', { type: 'text', 'data-path': field.path, 'data-kind': 'command', id: field.path });
+        input.value = joinCommand(value);
       } else {
         input = el('input', { type: field.type, 'data-path': field.path, id: field.path });
         input.value = value ?? '';
@@ -697,7 +767,8 @@ function collectSettings() {
     else if (input.type === 'password') {
       if (!input.value) continue;   // untouched: keep whatever is stored
       value = input.value;
-    } else value = input.value;
+    } else if (input.dataset.kind === 'command') value = splitCommand(input.value);
+    else value = input.value;
     if (value === null) continue;
 
     const keys = path.split('.');
