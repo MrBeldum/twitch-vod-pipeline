@@ -935,7 +935,9 @@ class SessionIndexRefreshTests(unittest.TestCase):
 
         with patch.object(self.pipeline, "_summarize_inner", side_effect=succeed):
             self.pipeline._summarize(self.session, self.chunk, "generation")
-        self.assertEqual(self.index_cells()[1][8], "yes")
+        # Chunk | Starts | Duration | Size | Resolution | Master | Proxy |
+        # Transcript | Chat | Report
+        self.assertEqual(self.index_cells()[1][9], "yes")
 
         rundown.unlink()
         self.pipeline.store.update_chunk(
@@ -948,7 +950,7 @@ class SessionIndexRefreshTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "provider failed"):
                 self.pipeline._summarize(
                     self.session, self.chunk, "generation")
-        self.assertEqual(self.index_cells()[1][8], "error")
+        self.assertEqual(self.index_cells()[1][9], "error")
 
         rundown.write_text("# obsolete rundown", encoding="utf-8")
         self.pipeline.store.update_chunk(
@@ -956,7 +958,7 @@ class SessionIndexRefreshTests(unittest.TestCase):
         self.pipeline._recover_summary_state(
             self.session, self.chunk, complete=False)
         self.assertFalse(rundown.exists())
-        self.assertEqual(self.index_cells()[1][8], "skipped")
+        self.assertEqual(self.index_cells()[1][9], "skipped")
 
     def test_index_failure_does_not_change_proxy_success(self):
         def succeed(_job, session, chunk):

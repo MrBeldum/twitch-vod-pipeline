@@ -25,7 +25,14 @@ import unittest
 from pathlib import Path
 
 from vodpipe.config import DEFAULTS, deep_merge
-from vodpipe.schema import RETIRED_PATHS, SCHEMA, ConfigError, validate
+from vodpipe.schema import (
+    RETIRED_MODELS,
+    RETIRED_PATHS,
+    RETIRED_PROVIDERS,
+    SCHEMA,
+    ConfigError,
+    validate,
+)
 from vodpipe.state import (
     _RETIRED_CHUNK_FIELDS,
     _CHUNK_FIELDS,
@@ -77,6 +84,25 @@ RETIRED_MODEL_CONFIG = {
 }
 
 
+# What a config.json written by the one-day build with four rundown engines
+# looks like. The API keys matter as much as the settings: they are real
+# secrets sitting in the operator's file, and retirement is what erases them.
+RETIRED_SUMMARY_CONFIG = {
+    "summary": {
+        "provider": "claude-cli",
+        "base_url": "https://api.moonshot.ai/v1",
+        "cli_command": ["codex", "exec", "--sandbox", "read-only"],
+    },
+    "secrets": {
+        "anthropic_api_key": "sk-ant-old",
+        "openai_api_key": "sk-openai-old",
+        "kimi_api_key": "sk-kimi-old",
+        "deepseek_api_key": "sk-deepseek-old",
+        "openai_compatible_api_key": "sk-other-old",
+    },
+}
+
+
 class RetiredConfigTests(unittest.TestCase):
     def test_a_config_from_the_build_that_had_the_feature_still_loads(self):
         cleaned = validate(deep_merge(copy.deepcopy(DEFAULTS), RETIRED_CONFIG))
@@ -109,6 +135,91 @@ class RetiredConfigTests(unittest.TestCase):
         with self.assertRaises(ConfigError):
             validate(deep_merge(copy.deepcopy(DEFAULTS),
                                 {"recording": {"invented_setting": 1}}))
+
+    def test_nothing_is_both_live_and_retired(self):
+        self.assertEqual(set(SCHEMA) & RETIRED_PATHS, set())
+
+
+
+class RetiredSummaryEngineTests(unittest.TestCase):
+    """The paid-API rundown engines, removed 2026-08-19.
+
+    Unlike `edit` above, these are retired key by key rather than by section:
+    `summary` and `secrets` both still carry live rules, so `_walk` goes on
+    recursing into them and neither container becomes unknown. Retiring the
+    section would have been wrong here -- it would have taken
+    `secrets.deepgram_api_key` with it.
+    """
+
+    def test_a_config_from_the_build_that_had_them_still_loads(self):
+        cleaned = validate(deep_merge(copy.deepcopy(DEFAULTS),
+                                      RETIRED_SUMMARY_CONFIG))
+        self.assertNotIn("base_url", cleaned["summary"])
+        self.assertNotIn("cli_command", cleaned["summary"])
+
+    def test_the_api_keys_are_dropped_rather_than_carried_forward(self):
+        """They are gone from the file after the next save, which is the
+        point: a key for an engine nothing can select is a live secret with
+        no purpose."""
+        cleaned = validate(deep_merge(copy.deepcopy(DEFAULTS),
+                                      RETIRED_SUMMARY_CONFIG))
+        self.assertEqual(sorted(cleaned["secrets"]),
+                         ["deepgram_api_key", "twitch_oauth_token"])
+        self.assertNotIn("sk-kimi-old", json.dumps(cleaned))
+
+    def test_the_live_secrets_survive_beside_the_retired_ones(self):
+        merged = deep_merge(copy.deepcopy(DEFAULTS), RETIRED_SUMMARY_CONFIG)
+        merged["secrets"]["deepgram_api_key"] = "dg-keep"
+        cleaned = validate(merged)
+        self.assertEqual(cleaned["secrets"]["deepgram_api_key"], "dg-keep")
+
+    def test_a_retired_engine_name_falls_back_to_the_one_that_remains(self):
+        """The retired thing here is a *value*, not a path, so `RETIRED_PATHS`
+        does not reach it -- and the operator's installed config.json named
+        `kimi-api` the day before. Refusing it would be the exact failure
+        retirement exists to prevent, so `_summary_provider` rewrites it."""
+        for name in RETIRED_PROVIDERS:
+            cleaned = validate(deep_merge(copy.deepcopy(DEFAULTS),
+                                          {"summary": {"provider": name}}))
+            self.assertEqual(cleaned["summary"]["provider"], "claude-cli", name)
+
+    def test_a_retired_engines_model_name_goes_with_it(self):
+        """`summary.model` names a model *for the selected engine*. Left behind,
+        `kimi-k3` would be handed to `claude -p --model` and turn a silent
+        fallback into a failed rundown once per chunk."""
+        cleaned = validate(deep_merge(
+            copy.deepcopy(DEFAULTS),
+            {"summary": {"provider": "kimi-api", "model": "kimi-k3"}}))
+        self.assertEqual(cleaned["summary"]["provider"], "claude-cli")
+        self.assertNotIn("model", cleaned["summary"])
+
+    def test_a_live_engines_model_name_is_left_alone(self):
+        cleaned = validate(deep_merge(
+            copy.deepcopy(DEFAULTS),
+            {"summary": {"provider": "claude-cli", "model": "claude-opus-5"}}))
+        self.assertEqual(cleaned["summary"]["model"], "claude-opus-5")
+
+    def test_grok_build_is_rewritten_to_the_cli_default(self):
+        """Grok CLI 1.0.5 rejects `grok-build` as an unknown model id. Blank
+        means the CLI default, which is currently Grok 4.6."""
+        self.assertIn("grok-build", RETIRED_MODELS)
+        cleaned = validate(deep_merge(
+            copy.deepcopy(DEFAULTS),
+            {"summary": {"provider": "grok-cli", "model": "grok-build"}}))
+        self.assertEqual(cleaned["summary"]["provider"], "grok-cli")
+        self.assertEqual(cleaned["summary"]["model"], "")
+
+    def test_an_engine_that_was_never_ours_is_still_refused(self):
+        """The fallback is a named list, not a general amnesty: a typo in the
+        engine name must still be caught while the operator is looking at it."""
+        with self.assertRaises(ConfigError):
+            validate(deep_merge(copy.deepcopy(DEFAULTS),
+                                {"summary": {"provider": "gemini-api"}}))
+
+    def test_no_retired_engine_is_also_a_live_one(self):
+        from vodpipe.models import PROVIDER_NAMES
+
+        self.assertEqual(set(PROVIDER_NAMES) & RETIRED_PROVIDERS, set())
 
     def test_nothing_is_both_live_and_retired(self):
         self.assertEqual(set(SCHEMA) & RETIRED_PATHS, set())

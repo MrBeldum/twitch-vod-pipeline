@@ -78,21 +78,22 @@ class CliDefaultCommandTests(unittest.TestCase):
 
     def normalise(self, argv):
         # Mirrors main()'s pre-parse step.
-        if not any(arg in SUBCOMMANDS for arg in argv):
-            argv = list(argv) + ["dashboard"]
+        from vodpipe.cli import _has_subcommand
+        if not _has_subcommand(argv):
+            argv = list(argv) + ["app"]
         return build_parser().parse_args(argv)
 
-    def test_config_flag_alone_still_reaches_the_dashboard(self):
+    def test_config_flag_alone_still_reaches_the_app(self):
         """PATH is a non-flag argument, which is what defeated the old test."""
         args = self.normalise(["--config", "C:/tmp/x.json"])
-        self.assertEqual(args.command, "dashboard")
-        # cmd_dashboard() reads both of these; their absence was the crash.
+        self.assertEqual(args.command, "app")
+        # cmd_app() reads both of these; their absence was the crash.
         self.assertTrue(hasattr(args, "port"))
-        self.assertTrue(hasattr(args, "no_browser"))
+        self.assertTrue(hasattr(args, "no_window"))
 
-    def test_bare_invocation_still_reaches_the_dashboard(self):
+    def test_bare_invocation_still_reaches_the_app(self):
         args = self.normalise([])
-        self.assertEqual(args.command, "dashboard")
+        self.assertEqual(args.command, "app")
         self.assertTrue(hasattr(args, "port"))
 
     def test_an_explicit_subcommand_is_not_overridden(self):

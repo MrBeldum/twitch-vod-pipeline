@@ -96,6 +96,19 @@ class ProductReadinessTests(unittest.TestCase):
         self.assertIn("state.refreshError", JS)
         self.assertRegex(CSS, r"\.connection\.stale\s*\{")
 
+    def test_manual_refresh_is_a_header_control(self):
+        """The Chromium app window has no toolbar, so F5 is not discoverable."""
+        self.assertIn('id="refresh"', HTML)
+        self.assertIn("Refresh", HTML)
+        self.assertIn("await api('/api/refresh', {})", JS)
+        self.assertIn("event.key === 'F5'", JS)
+        self.assertIn("options.force", JS)
+        # The poll stays a cheap GET. Only the button (and R/F5) kicks probes.
+        self.assertIn("await api('/api/state')", JS)
+        self.assertNotIn("shortcuts-toggle", HTML)
+        self.assertNotIn("Record · transcribe", HTML)
+        self.assertNotIn("ON AIR", JS)
+
     def test_session_errors_are_rendered_outside_the_expanded_body(self):
         error = JS.index("if (session.error)")
         expanded = JS.index("if (open) node.append(sessionBody(session))")
@@ -149,43 +162,31 @@ if __name__ == "__main__":
 
 
 class ChunkTableTests(unittest.TestCase):
-    """The chunk table's header row and its cells must stay the same width.
-
-    Adding an artifact column means touching two places that look nothing alike
-    -- a list of header strings and a sequence of `el('td', ...)` calls -- and
-    getting one of them wrong shifts every column after it without any error.
+    """Every per-artifact status the state model carries has to be on the
+    chunk row. The UI is a pipeline of chips, not a table, but the contract
+    is the same: adding an artifact and forgetting to show it is a failing
+    test, and a column for the retracted edit would sit at `pending` forever.
     """
 
-    def row(self) -> str:
+    def body(self) -> str:
         start = JS.index("function sessionBody(")
-        end = JS.index("el('thead'", start)
-        return JS[start:end]
-
-    def headers(self) -> list[str]:
-        start = JS.index("el('thead'")
-        block = JS[start:JS.index("]\n", start)]
-        # The two element names the header row is built from are not columns.
-        labels = re.findall(r"'([^']*)'", block)
-        return [label for label in labels if label not in ("thead", "tr")]
-
-    def test_the_header_and_the_cells_have_the_same_width(self):
-        cells = len(re.findall(r"el\('td'", self.row()))
-        self.assertEqual(cells, len(self.headers()),
-                         f"{cells} cells against {self.headers()}")
+        return JS[start:JS.index("async function loadOutputs", start)]
 
     def test_every_artifact_status_the_state_model_carries_is_shown(self):
-        """Read from the state model rather than a list written out here, so
-        adding an artifact and forgetting the column is a failing test."""
         from vodpipe.state import Chunk
 
         shown = {field for field in vars(Chunk(index=0, session_id="s",
                                               channel="c", started_at=0.0))
                  if field.endswith("_status") or field == "status"}
         for field in sorted(shown):
-            self.assertIn(f"chunk.{field}", self.row(), field)
+            self.assertIn(f"chunk.{field}", self.body(), field)
+
+    def test_the_pipeline_names_every_live_artifact(self):
+        body = self.body()
+        for label in ("Master", "Proxy", "Transcript", "Chat", "Report"):
+            self.assertIn(label, body, label)
 
     def test_the_retired_edit_column_is_gone(self):
-        """This build records and transcribes; it does not cut. A column for an
-        artifact nothing produces would sit at `pending` forever."""
-        self.assertNotIn("Edit", self.headers())
-        self.assertNotIn("edit_status", self.row())
+        """This build records and transcribes; it does not cut."""
+        self.assertNotIn("edit_status", self.body())
+        self.assertNotIn("'Edit'", self.body())

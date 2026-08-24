@@ -3,10 +3,16 @@ config.json
 config.json.lock
 
 .work/
+.app-profile/
 __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+logs/
+
+# Built by `vodpipe install` / packaging/build.cmd
+/VODPipeline.exe
+/VODPipeline.VisualElementsManifest.xml
 
 # Anything that lands in the repo by accident
 *.ts

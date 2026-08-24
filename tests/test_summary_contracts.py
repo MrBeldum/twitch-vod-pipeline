@@ -108,7 +108,7 @@ class SummaryFixture(unittest.TestCase):
 
     def rundown(self, chunk: Chunk, generation: str, body: str = "# Rundown") -> Path:
         output = self.pipeline.transcriber.output_dir(self.session, chunk)
-        path = output / "rundown.md"
+        path = output / "report.md"
         header = build_header(
             self.session.channel, self.session.session_id, chunk.label,
             chunk.session_offset, chunk.duration, self.session.started_at)
@@ -280,14 +280,14 @@ class SummaryRaceTests(SummaryFixture):
             self.assertEqual(
                 rundown_generation(
                     self.pipeline.transcriber.output_dir(
-                        self.session, chunk) / "rundown.md"),
+                        self.session, chunk) / "report.md"),
                 current_generation)
 
             release.set()
             self.wait(old_job)
 
         rundown = self.pipeline.transcriber.output_dir(
-            self.session, chunk) / "rundown.md"
+            self.session, chunk) / "report.md"
         self.assertIn("current beta", rundown.read_text(encoding="utf-8"))
         self.assertNotIn("stale alpha", rundown.read_text(encoding="utf-8"))
         self.assertEqual(chunk.summary_status, DONE)
@@ -411,16 +411,30 @@ class ThreeChunkRetranscriptionTests(SummaryFixture):
 
 
 class CapabilityTests(SummaryFixture):
-    def test_anthropic_capability_reports_the_actual_key(self):
-        self.config.set("summary.provider", "anthropic-api")
+    def test_capability_follows_the_claude_executable(self):
+        """The engine spends a subscription, so the whole question is whether
+        `claude -p` can be run. It used to be whether an API key was set."""
+        import dataclasses
+
+        self.config.set("summary.provider", "claude-cli")
+        self.pipeline.tools = dataclasses.replace(
+            self.pipeline.tools, claude="")
         payload = self.pipeline.state_payload()
-        self.assertFalse(payload["capabilities"]["anthropic_api"])
+        self.assertFalse(payload["capabilities"]["claude_cli"])
         self.assertFalse(payload["capabilities"]["summary_available"])
 
-        self.config.set("secrets.anthropic_api_key", "configured")
+        self.pipeline.tools = dataclasses.replace(
+            self.pipeline.tools, claude="claude.exe")
         payload = self.pipeline.state_payload()
-        self.assertTrue(payload["capabilities"]["anthropic_api"])
+        self.assertTrue(payload["capabilities"]["claude_cli"])
         self.assertTrue(payload["capabilities"]["summary_available"])
+
+    def test_switching_rundowns_off_is_reported_as_disabled(self):
+        self.config.set("summary.provider", "none")
+        payload = self.pipeline.state_payload()
+        self.assertFalse(payload["capabilities"]["summary_available"])
+        self.assertIn(
+            "disabled", payload["capabilities"]["summary_unavailable_reason"])
 
 
 if __name__ == "__main__":

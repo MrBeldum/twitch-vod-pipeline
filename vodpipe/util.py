@@ -38,6 +38,7 @@ class Tools:
     ffprobe: str
     streamlink: str
     claude: str | None
+    grok: str | None = None
 
 
 _WINDOWS_HINTS = {
@@ -48,6 +49,10 @@ _WINDOWS_HINTS = {
         r"C:\Program Files\Streamlink\bin\streamlink.exe",
     ],
     "claude": [r"C:\Users\%USERNAME%\.local\bin\claude.exe"],
+    "grok": [
+        r"C:\Users\%USERNAME%\.grok\bin\grok.exe",
+        r"C:\Users\%USERNAME%\.local\bin\grok.exe",
+    ],
 }
 
 
@@ -99,6 +104,7 @@ def resolve_tools(overrides: dict[str, str] | None = None, *,
         ffprobe=resolved["ffprobe"] or "",
         streamlink=resolved["streamlink"] or "",
         claude=find_tool("claude", overrides.get("claude")),
+        grok=find_tool("grok", overrides.get("grok")),
     )
 
 

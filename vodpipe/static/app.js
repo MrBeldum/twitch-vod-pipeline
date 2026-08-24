@@ -21,6 +21,11 @@ const state = {
   polling: false,
   lastRefresh: null,
   refreshError: null,
+  wantForce: false,
+  refreshing: false,
+  modalRaw: false,
+  modalText: '',
+  modalIsMarkdown: false,
 };
 
 /* ------------------------------------------------------------------ helpers */
@@ -78,6 +83,53 @@ function when(epoch) {
   });
 }
 
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, char => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[char]));
+}
+
+function renderMarkdown(source) {
+  const escaped = escapeHtml(source).replace(
+    /\[(\d{1,2}:\d{2}:\d{2}(?:-\d{1,2}:\d{2}:\d{2})?)\]/g,
+    '<span class="ts">[$1]</span>',
+  );
+  const lines = escaped.split('\n');
+  const out = [];
+  let inList = false;
+  const closeList = () => { if (inList) { out.push('</ul>'); inList = false; } };
+  const inline = line => line
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>');
+  for (const line of lines) {
+    const heading = /^(#{1,3})\s+(.*)$/.exec(line);
+    if (heading) {
+      closeList();
+      const level = heading[1].length;
+      out.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+      continue;
+    }
+    if (/^[-*]\s+/.test(line)) {
+      if (!inList) { out.push('<ul>'); inList = true; }
+      out.push(`<li>${inline(line.replace(/^[-*]\s+/, ''))}</li>`);
+      continue;
+    }
+    if (/^---+$/.test(line.trim())) {
+      closeList();
+      out.push('<hr>');
+      continue;
+    }
+    if (!line.trim()) {
+      closeList();
+      continue;
+    }
+    closeList();
+    out.push(`<p>${inline(line)}</p>`);
+  }
+  closeList();
+  return `<div class="md-body">${out.join('')}</div>`;
+}
+
 function renderConnection() {
   const node = $('#connection');
   const refreshed = state.lastRefresh
@@ -92,8 +144,8 @@ function renderConnection() {
     document.body.classList.add('poll-stale');
   } else if (state.lastRefresh) {
     node.className = 'connection connected';
-    node.textContent = `Last refresh: ${refreshed}`;
-    node.title = 'Dashboard data is current';
+    node.textContent = 'Connected';
+    node.title = `Dashboard data is current · last refresh ${refreshed}`;
     document.body.classList.remove('poll-stale');
   } else {
     node.className = 'connection connecting';
@@ -119,13 +171,20 @@ function el(tag, props = {}, children = []) {
 // A re-render mid-typing would throw away what the user is entering.
 const isEditing = () => ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName);
 
+function typingIn(sel) {
+  return isEditing() && document.activeElement && document.activeElement.closest(sel);
+}
+
 /* ------------------------------------------------------------------ channels */
 
 function renderChannels(data) {
   const root = $('#channels');
   root.textContent = '';
   if (!data.channels.length) {
-    root.append(el('div', { class: 'empty', text: 'No channels yet. Add one above — any channel, nothing is hardcoded.' }));
+    root.append(el('div', { class: 'empty' }, [
+      el('strong', { text: 'No channels yet' }),
+      el('span', { text: 'Paste a channel name or a twitch.tv URL above.' }),
+    ]));
     return;
   }
 
@@ -133,9 +192,12 @@ function renderChannels(data) {
     // Armed = the user pressed Record while the channel was offline. Nothing is
     // running; the watcher starts it the moment the channel goes live.
     const unknown = channel.live_state === 'unknown';
-    const dotClass = channel.recording
-      ? 'dot rec'
-      : (channel.armed ? 'dot armed' : (channel.live ? 'dot live' : (unknown ? 'dot unknown' : 'dot')));
+    const stateClass = channel.recording
+      ? 'state rec'
+      : (channel.armed ? 'state armed' : (channel.live ? 'state live' : (unknown ? 'state unknown' : 'state')));
+    const stateLabel = channel.recording
+      ? 'REC'
+      : (channel.armed ? 'WAIT' : (channel.live ? 'LIVE' : (unknown ? '?' : 'OFF')));
     const statusText = channel.recording
       ? 'recording'
       : (channel.armed ? 'waiting for it to go live' : (channel.live ? 'live' : (unknown ? 'status unknown' : 'offline')));
@@ -160,7 +222,7 @@ function renderChannels(data) {
       });
     } else {
       action = el('button', {
-        text: 'Record',
+        class: 'record', text: 'Record',
         title: 'Records now if the channel is live, otherwise as soon as it is',
         onclick: () => guard(
           api('/api/record/start', { channel: channel.name })
@@ -171,7 +233,7 @@ function renderChannels(data) {
     }
 
     root.append(el('div', { class: 'channel' }, [
-      el('span', { class: dotClass, title: statusText }),
+      el('span', { class: stateClass, title: statusText, text: stateLabel }),
       el('span', { class: 'name', text: channel.name }),
       el('span', { class: 'title', text: channel.title || statusText }),
       el('span', { class: 'auto' }, [toggle, el('label', { for: `auto-${channel.name}`, text: 'auto' })]),
@@ -209,8 +271,17 @@ function renderLive(data) {
   const root = $('#live');
   root.textContent = '';
   const sessions = data.sessions.filter(s => s.status === 'recording');
+  const recording = sessions.length > 0;
+  document.title = recording ? '● VOD Pipeline' : 'VOD Pipeline';
+  document.body.classList.toggle('is-recording', recording);
+  const panel = $('#live-panel');
+  panel.classList.toggle('idle', !recording);
+  panel.classList.toggle('active', recording);
   if (!sessions.length) {
-    root.append(el('div', { class: 'empty', text: 'Nothing recording right now.' }));
+    root.append(el('div', { class: 'empty' }, [
+      el('strong', { text: 'Nothing recording' }),
+      el('span', { text: 'Press Record on a channel, or download a VOD.' }),
+    ]));
     return;
   }
 
@@ -228,22 +299,25 @@ function renderLive(data) {
     const progress = Math.min(100, (intoChunk / chunkLength) * 100);
 
     root.append(el('div', { class: 'live-session' }, [
-      el('div', { class: 'live-head' }, [
-        el('span', { class: 'dot rec' }),
-        el('span', { class: 'who', text: session.channel }),
-        isVod ? el('span', { class: 'badge on', title: session.source_url || 'VOD download', text: 'VOD' }) : null,
-        el('span', { class: 'meta', text: `${isVod ? clock(sessionExtent(session)) + ' downloaded' : clock(elapsed) + ' elapsed · ' + clock(sessionExtent(session)) + ' recorded'} · ${session.chunks.length} chunk(s)` }),
-        chunk ? el('span', { class: 'meta', text: `${chunk.label}: ${clock(intoChunk)} / ${clock(chunkLength)}` }) : null,
-        (session.ad_events || []).length
-          ? el('span', {
-              class: 'meta',
-              title: 'Informational only. Nothing is cut from the recording.',
-              text: `· ${session.ad_events.length} ad event(s) noted`,
-            })
-          : null,
-      ]),
       el('div', { class: 'bar' }, [el('span', { style: `width:${progress}%` })]),
-      el('div', { class: 'snapshot' }, [
+      el('div', { class: 'live-head' }, [
+        el('div', { class: 'live-id' }, [
+          isVod ? el('span', { class: 'badge on', text: 'VOD' }) : null,
+          el('span', { class: 'dot rec' }),
+          el('span', { class: 'who', text: session.channel }),
+          el('span', { class: 'meta', text: `${isVod ? clock(sessionExtent(session)) + ' downloaded' : clock(sessionExtent(session)) + ' recorded'} · ${session.chunks.length} chunk(s)` }),
+          chunk ? el('span', { class: 'meta', text: `${chunk.label}: ${clock(intoChunk)} / ${clock(chunkLength)}` }) : null,
+          (session.ad_events || []).length
+            ? el('span', {
+                class: 'meta',
+                title: 'Informational only. Nothing is cut from the recording.',
+                text: `${session.ad_events.length} ad event(s) noted`,
+              })
+            : null,
+        ]),
+        el('span', { class: 'live-clock', text: clock(isVod ? sessionExtent(session) : elapsed) }),
+      ]),
+      el('div', { class: 'live-toolbar' }, [
         // The channel row's Stop button is absent if the channel was removed
         // from the watch list, or was never on it (a direct API start), so the
         // live card carries its own.
@@ -253,7 +327,7 @@ function renderLive(data) {
             ? api('/api/vod/stop', { session_id: session.session_id })
             : api('/api/record/stop', { channel: session.channel })),
         }),
-        el('span', { class: 'label', text: session.directory }),
+        el('span', { class: 'path', text: session.directory }),
       ]),
       snapshotControls(session),
     ]));
@@ -278,28 +352,32 @@ function snapshotControls(session) {
   const precise = el('input', { type: 'checkbox', id: `p-${session.session_id}` });
 
   const quick = [5, 10, 20, 30].map(minutes => el('button', {
-    text: `Last ${minutes}m`,
+    class: 'ghost', text: `Last ${minutes}m`,
     onclick: () => take({ last_minutes: minutes, precise: precise.checked, name: nameField.value }),
   }));
 
-  return el('div', { class: 'snapshot' }, [
-    el('span', { class: 'label', text: 'Snapshot:' }),
-    ...quick,
-    el('span', { class: 'label', text: 'or range' }),
-    startField,
-    el('span', { class: 'label', text: '→' }),
-    endField,
-    el('button', {
-      class: 'ghost', text: 'Cut',
-      onclick: () => {
-        const start = parseClock(startField.value);
-        const end = parseClock(endField.value);
-        if (start === null) return toast('Enter a start time as HH:MM:SS', true);
-        take({ start, end: end === null ? undefined : end, precise: precise.checked, name: nameField.value });
-      },
-    }),
-    nameField,
-    el('span', { class: 'auto' }, [precise, el('label', { for: precise.id, text: 'frame-exact (slower)' })]),
+  return el('div', { class: 'snap-block' }, [
+    el('div', { class: 'snap-row' }, [
+      el('span', { class: 'label', text: 'Snapshot' }),
+      ...quick,
+    ]),
+    el('div', { class: 'snap-row' }, [
+      el('span', { class: 'label', text: 'Range' }),
+      startField,
+      el('span', { class: 'label', text: '→' }),
+      endField,
+      el('button', {
+        text: 'Cut',
+        onclick: () => {
+          const start = parseClock(startField.value);
+          const end = parseClock(endField.value);
+          if (start === null) return toast('Enter a start time as HH:MM:SS', true);
+          take({ start, end: end === null ? undefined : end, precise: precise.checked, name: nameField.value });
+        },
+      }),
+      nameField,
+      el('span', { class: 'auto' }, [precise, el('label', { for: precise.id, text: 'frame-exact' })]),
+    ]),
   ]);
 }
 
@@ -309,15 +387,39 @@ function statusChip(value) {
   return el('span', { class: `status ${value}`, text: value });
 }
 
+function pipeChip(label, status) {
+  return el('span', {
+    class: `pipe ${status || ''}`,
+    title: `${label}: ${status || '—'}`,
+    text: `${label} · ${status || '—'}`,
+  });
+}
+
 function renderSessions(data) {
   const root = $('#sessions');
   root.textContent = '';
+  const query = ($('#session-search')?.value || '').trim().toLowerCase();
+  const sessions = query
+    ? data.sessions.filter(session => {
+        const hay = [
+          session.channel, session.session_id, session.status, session.source_kind,
+        ].join(' ').toLowerCase();
+        return hay.includes(query);
+      })
+    : data.sessions;
   if (!data.sessions.length) {
-    root.append(el('div', { class: 'empty', text: 'No sessions recorded yet.' }));
+    root.append(el('div', { class: 'empty' }, [
+      el('strong', { text: 'No sessions yet' }),
+      el('span', { text: 'A recording or VOD download shows up here as soon as it starts.' }),
+    ]));
+    return;
+  }
+  if (!sessions.length) {
+    root.append(el('div', { class: 'empty', text: `No sessions match “${query}”.` }));
     return;
   }
 
-  for (const session of data.sessions) {
+  for (const session of sessions) {
     const open = state.expanded.has(session.session_id);
     const toggleSession = () => {
       if (open) state.expanded.delete(session.session_id);
@@ -356,7 +458,7 @@ function renderSessions(data) {
           })
         : null,
       el('span', { class: 'spacer' }),
-      el('span', { class: 'when', text: open ? '▾' : '▸' }),
+      el('span', { class: open ? 'chev open' : 'chev' }),
     ]);
 
     const node = el('div', { class: 'session' }, [head]);
@@ -390,51 +492,51 @@ function sessionBody(session) {
       const summaryReason = chunk.summary_eligible
         ? state.data?.capabilities?.summary_unavailable_reason
         : chunk.summary_eligibility_reason;
-      return el('tr', {}, [
-      el('td', { text: chunk.label }),
-      el('td', { text: clock(chunk.session_offset) }),
-      el('td', { text: clock(chunk.duration) }),
-      el('td', { text: chunk.size_bytes ? bytes(chunk.size_bytes) : '—' }),
-      el('td', { text: chunk.height ? `${chunk.width}x${chunk.height}` : '—' }),
-      el('td', {}, [statusChip(chunk.status)]),
-      el('td', {}, [statusChip(chunk.proxy_status)]),
-      el('td', {}, [statusChip(chunk.transcript_status), chunk.word_count
-        ? el('span', { class: 'when', text: ` ${chunk.word_count} words` }) : null]),
-      el('td', {}, [statusChip(chunk.summary_status)]),
-      el('td', {}, Object.keys(chunk.errors || {}).length
-        ? [el('span', {
-            class: 'status error',
-            title: Object.entries(chunk.errors)
-              .map(([name, text]) => `${name}: ${text}`).join('\n'),
-            text: `${Object.keys(chunk.errors).length} error(s)`,
-          })]
-        : []),
-      el('td', { class: 'actions' }, [
-        el('button', {
-          class: 'ghost', text: 'Re-transcribe',
-          onclick: () => guard(api('/api/chunk/retranscribe', {
-            session_id: session.session_id, chunk: chunk.label,
-          }).then(() => toast(`Queued re-transcribe for ${chunk.label}`))),
-        }),
-        el('button', {
-          class: 'ghost', text: 'Rundown',
-          disabled: !summaryAllowed,
-          title: summaryAllowed ? 'Generate this rundown' : (summaryReason || 'Rundown unavailable'),
-          onclick: () => guard(api('/api/chunk/summarize', {
-            session_id: session.session_id, chunk: chunk.label,
-          }).then(() => toast(`Queued rundown for ${chunk.label}`))),
-        }),
-      ]),
+      const errors = Object.entries(chunk.errors || {});
+      return el('div', { class: 'chunk-row' }, [
+        el('div', { class: 'chunk-top' }, [
+          el('span', { class: 'chunk-label', text: chunk.label }),
+          el('span', { class: 'when', text: `${clock(chunk.session_offset)} · ${clock(chunk.duration)}` }),
+          el('span', { class: 'when', text: chunk.size_bytes ? bytes(chunk.size_bytes) : '—' }),
+          el('span', { class: 'when', text: chunk.height ? `${chunk.width}×${chunk.height}` : '—' }),
+          chunk.word_count
+            ? el('span', { class: 'when', text: `${chunk.word_count} words` })
+            : null,
+        ]),
+        el('div', { class: 'pipeline' }, [
+          pipeChip('Master', chunk.status),
+          pipeChip('Proxy', chunk.proxy_status),
+          pipeChip('Transcript', chunk.transcript_status),
+          pipeChip('Chat', chunk.chat_status),
+          pipeChip('Report', chunk.summary_status),
+          errors.length
+            ? el('span', {
+                class: 'status error',
+                title: errors.map(([name, text]) => `${name}: ${text}`).join('\n'),
+                text: `${errors.length} error(s)`,
+              })
+            : null,
+        ]),
+        el('div', { class: 'chunk-actions' }, [
+          el('button', {
+            class: 'ghost', text: 'Re-transcribe',
+            onclick: () => guard(api('/api/chunk/retranscribe', {
+              session_id: session.session_id, chunk: chunk.label,
+            }).then(() => toast(`Queued re-transcribe for ${chunk.label}`))),
+          }),
+          el('button', {
+            class: 'ghost', text: 'Report',
+            disabled: !summaryAllowed,
+            title: summaryAllowed ? 'Generate this report' : (summaryReason || 'Report unavailable'),
+            onclick: () => guard(api('/api/chunk/summarize', {
+              session_id: session.session_id, chunk: chunk.label,
+            }).then(() => toast(`Queued report for ${chunk.label}`))),
+          }),
+        ]),
       ]);
     });
 
-  const table = el('table', {}, [
-    el('thead', {}, [el('tr', {}, ['Chunk', 'Starts', 'Length', 'Size', 'Resolution', 'Master', 'Proxy', 'Transcript', 'Rundown', 'Problems', '']
-      .map(label => el('th', { text: label })))]),
-    el('tbody', {}, rows),
-  ]);
-
-  const body = el('div', { class: 'session-body' }, [table]);
+  const body = el('div', { class: 'session-body' }, rows);
 
   if ((session.ad_events || []).length) {
     // Deliberately worded as observations, not intervals: streamlink filters ad
@@ -454,7 +556,7 @@ function sessionBody(session) {
       body.append(el('div', {}, [
         el('div', { class: 'group-label', text: group.group }),
         el('div', { class: 'files' }, group.files.map(file => el('button', {
-          class: 'file-chip',
+          class: file.name === 'report.md' ? 'file-chip report' : 'file-chip',
           type: 'button',
           text: file.name,
           onclick: () => openFile(file),
@@ -490,6 +592,13 @@ function renderJobs(data) {
   const active = data.jobs.filter(job => job.status === 'queued' || job.status === 'running');
   $('#jobs-count').textContent = active.length ? `${active.length} active` : 'idle';
 
+  const panel = $('#jobs-panel');
+  const toggle = panel.querySelector('[data-toggle="jobs-panel"]');
+  if (active.length && panel.classList.contains('collapsed')) {
+    panel.classList.remove('collapsed');
+    if (toggle) toggle.textContent = 'Hide';
+  }
+
   const root = $('#jobs');
   root.textContent = '';
   if (!data.jobs.length) {
@@ -509,14 +618,9 @@ function renderJobs(data) {
 
 // Keep in step with models.PROVIDER_NAMES.
 const ENGINE_LABELS = {
-  'claude-cli': 'claude -p',
-  'anthropic-api': 'Anthropic API',
-  'kimi-api': 'Kimi API',
-  'deepseek-api': 'DeepSeek API',
-  'openai-api': 'OpenAI API',
-  'openai-compatible': 'OpenAI-compatible',
-  cli: 'CLI',
-  none: 'Rundowns off',
+  'claude-cli': 'Claude Code',
+  'grok-cli': 'Grok 4.6',
+  none: 'Reports off',
 };
 
 function renderHeader(data) {
@@ -526,8 +630,7 @@ function renderHeader(data) {
   const items = [
     ['Deepgram', data.capabilities.deepgram, ''],
     ['Twitch token', data.capabilities.twitch_token, ''],
-    // The rundown badge reports the engine that is actually selected and whether
-    // *it* can run, rather than choosing between two hardcoded names.
+    // Name the selected engine, and whether that engine can actually run.
     [ENGINE_LABELS[engine] || engine,
       data.capabilities.summary_available,
       data.capabilities.summary_unavailable_reason || ''],
@@ -553,21 +656,42 @@ function renderHeader(data) {
 let modalFile = null;
 let previewToken = 0;
 
+function paintModalBody() {
+  const body = $('#modal-body');
+  body.textContent = '';
+  if (state.modalIsMarkdown && !state.modalRaw) {
+    body.innerHTML = renderMarkdown(state.modalText);
+  } else {
+    body.append(el('pre', { text: state.modalText }));
+  }
+  const toggle = $('#modal-view');
+  toggle.hidden = !state.modalIsMarkdown;
+  toggle.textContent = state.modalRaw ? 'Formatted' : 'Raw';
+}
+
 async function openFile(file) {
   modalFile = file;
   // Responses can arrive out of order; an older one must not overwrite a newer
   // selection.
   const token = ++previewToken;
   $('#modal-title').textContent = file.name;
-  $('#modal-body').textContent = 'Loading…';
+  state.modalText = 'Loading…';
+  state.modalIsMarkdown = false;
+  state.modalRaw = false;
+  paintModalBody();
   $('#modal').hidden = false;
   try {
     const payload = await api(`/api/file?artifact_id=${encodeURIComponent(file.artifact_id)}`);
     if (token !== previewToken) return;
-    $('#modal-body').textContent = payload.text;
+    state.modalText = payload.text;
+    state.modalIsMarkdown = /\.md$/i.test(file.name);
+    state.modalRaw = false;
+    paintModalBody();
   } catch (err) {
     if (token !== previewToken) return;
-    $('#modal-body').textContent = `Could not read this file:\n${err.message}`;
+    state.modalText = `Could not read this file:\n${err.message}`;
+    state.modalIsMarkdown = false;
+    paintModalBody();
   }
 }
 
@@ -579,16 +703,6 @@ const SETTINGS_SCHEMA = [
       desc: 'Required for transcription. Stored in config.json.' },
     { path: 'secrets.twitch_oauth_token', label: 'Twitch OAuth token', type: 'password',
       desc: 'Optional. With Twitch Turbo this is the reliable ad-free path.' },
-    { path: 'secrets.anthropic_api_key', label: 'Anthropic API key', type: 'password',
-      desc: 'Only needed if the rundown engine is anthropic-api.' },
-    { path: 'secrets.kimi_api_key', label: 'Kimi (Moonshot) API key', type: 'password',
-      desc: 'Only needed if the rundown engine is kimi-api. Keys: platform.kimi.ai' },
-    { path: 'secrets.deepseek_api_key', label: 'DeepSeek API key', type: 'password',
-      desc: 'Only needed if the rundown engine is deepseek-api. Keys: platform.deepseek.com' },
-    { path: 'secrets.openai_api_key', label: 'OpenAI API key', type: 'password',
-      desc: 'Only needed if the rundown engine is openai-api.' },
-    { path: 'secrets.openai_compatible_api_key', label: 'Other endpoint API key', type: 'password',
-      desc: 'Only needed if the rundown engine is openai-compatible.' },
   ]},
   { title: 'Recording', fields: [
     { path: 'recording.chunk_seconds', label: 'Chunk length (seconds)', type: 'number' },
@@ -606,7 +720,7 @@ const SETTINGS_SCHEMA = [
     { path: 'recording.keep_ts_after_remux', label: 'Keep the .ts working copy', type: 'checkbox' },
     { path: 'recording.twitch_low_latency', label: 'Twitch low latency', type: 'checkbox' },
     { path: 'recording.streamlink_no_config', label: 'Ignore your own streamlink config', type: 'checkbox',
-      desc: 'Off by default. Turn it on for reproducible recordings; leave it off if you keep a token or plugin settings in streamlink’s own config.' },
+      desc: 'On = reproducible recordings. Off = honour a token or plugin settings in streamlink’s own config.' },
   ]},
   { title: 'Proxies', fields: [
     { path: 'proxies.enabled', label: 'Generate proxies', type: 'checkbox' },
@@ -623,7 +737,7 @@ const SETTINGS_SCHEMA = [
       desc: 'Use "auto", a zero-based audio ordinal (0, 1, ...), or a stream language tag such as en or es.' },
     { path: 'transcription.slice_seconds', label: 'Rolling slice (seconds)', type: 'number' },
     { path: 'transcription.filler_words', label: 'Transcribe "uh" and "um"', type: 'checkbox',
-      desc: 'Keeps the transcript verbatim, so a cut made from the text lands where you expect and a filler can be selected and deleted on its own. Turn it off for cleaner reading copy. Premiere\'s automatic "delete all fillers" is not supported — it never recognised the tags.' },
+      desc: 'Keep fillers in the transcript so a cut lands where you expect. Premiere\'s "delete all fillers" is not supported.' },
     { path: 'transcription.stitch_chunk_boundaries', label: 'Repair words across chunk boundaries', type: 'checkbox',
       desc: 'Chunks are separate files, so a word spoken across the join is clipped in both. This re-transcribes a few seconds spanning the join — one extra short request per boundary.' },
   ]},
@@ -632,24 +746,22 @@ const SETTINGS_SCHEMA = [
       desc: 'Each cut is an ffmpeg run on the drive the recorder is writing to.' },
     { path: 'snapshots.max_per_session', label: 'Cuts at once (per session)', type: 'number' },
   ]},
-  { title: 'Summary', fields: [
-    { path: 'summary.enabled', label: 'Write rundowns', type: 'checkbox' },
+  { title: 'Report', fields: [
+    { path: 'summary.enabled', label: 'Write editor reports', type: 'checkbox' },
     { path: 'summary.provider', label: 'Engine', type: 'select',
-      options: ['claude-cli', 'anthropic-api', 'kimi-api', 'deepseek-api', 'openai-api', 'openai-compatible', 'cli', 'none'],
-      desc: 'claude-cli and cli spend a subscription; the rest spend an API key. '
-            + 'A ChatGPT or Gemini subscription has no API of its own \u2014 use cli with that vendor\u2019s command.' },
-    { path: 'summary.model', label: 'Model (API engines)', type: 'text',
-      desc: 'Names the model for whichever engine is selected. Leave it blank for that engine\u2019s default '
-            + '(kimi-k3, deepseek-v4-pro, claude-sonnet-5). If the name is wrong, the error lists what the endpoint actually offers.' },
-    { path: 'summary.base_url', label: 'Endpoint (openai-compatible only)', type: 'text',
-      desc: 'The API root of any OpenAI-shaped server, e.g. https://openrouter.ai/api/v1 or http://127.0.0.1:11434/v1.' },
-    { path: 'summary.cli_command', label: 'Command (cli engine only)', type: 'command',
-      desc: 'The subscription CLI to run, e.g. codex exec --sandbox read-only. The transcript arrives on its stdin; '
-            + 'put {system} in an argument to pass the instruction there instead of prepending it to stdin.' },
-    { path: 'summary.min_words', label: 'Minimum words for a rundown', type: 'number' },
-    { path: 'summary.max_tokens', label: 'Maximum rundown output tokens', type: 'number' },
-    { path: 'summary.max_retries', label: 'Rundown attempts', type: 'number',
-      desc: 'How many times to ask the engine for one rundown before giving up. A rundown runs in the background and its engine can rate-limit — claude -p shares your Claude subscription quota — so a single transient refusal should not lose the rundown. All attempts share the one timeout below.' },
+      options: ['claude-cli', 'grok-cli', 'none'],
+      desc: '`claude -p` or `grok -p` (default Grok 4.6). Local subscription CLIs, not paid HTTP APIs. `none` turns reports off.' },
+    { path: 'summary.model', label: 'Model', type: 'text',
+      desc: 'Passed as --model. Leave blank: Claude Code picks from your subscription; Grok uses its CLI default (currently Grok 4.6).' },
+    { path: 'summary.min_words', label: 'Minimum words for a report', type: 'number' },
+    { path: 'summary.max_tokens', label: 'Maximum report output tokens', type: 'number' },
+    { path: 'summary.max_retries', label: 'Report attempts', type: 'number',
+      desc: 'Tries per report, sharing one timeout. A single refusal should not lose the report.' },
+  ]},
+  { title: 'Chat', fields: [
+    { path: 'chat.enabled', label: 'Download Twitch chat', type: 'checkbox',
+      desc: 'Live IRC, VOD comments via Twitch GraphQL. Feeds the report. A chat failure never fails a recording.' },
+    { path: 'chat.vod_threads', label: 'VOD chat download threads', type: 'number' },
   ]},
   { title: 'Paths', fields: [
     { path: 'paths.masters_root', label: 'Masters folder', type: 'text',
@@ -661,7 +773,7 @@ const SETTINGS_SCHEMA = [
   ]},
   { title: 'Network', fields: [
     { path: 'network.proxy', label: 'Proxy for streamlink', type: 'text',
-      desc: 'Optional HTTP/SOCKS proxy for live capture, VOD download and live-status probes — e.g. socks5://127.0.0.1:1080 or http://user:pass@host:3128. This is how you reach Twitch from a region it has left (South Korea) and record source quality without a full VPN. Blank means a direct connection.' },
+      desc: 'HTTP/SOCKS for live, VOD, and live-status probes, e.g. socks5://127.0.0.1:1080. Blank = direct.' },
   ]},
   { title: 'Watcher', fields: [
     { path: 'watcher.enabled', label: 'Watch channels and auto-record', type: 'checkbox' },
@@ -671,34 +783,6 @@ const SETTINGS_SCHEMA = [
 ];
 
 const dig = (obj, path) => path.split('.').reduce((node, key) => (node ?? {})[key], obj);
-
-// argv <-> one editable line. Quotes are honoured so an argument containing a
-// space stays one argument; everything else splits on whitespace.
-const joinCommand = (parts) => (Array.isArray(parts) ? parts : [])
-  .map(part => (/[\s"]/.test(part) ? `"${String(part).replace(/"/g, '\\"')}"` : part))
-  .join(' ');
-
-function splitCommand(text) {
-  const parts = [];
-  let current = '';
-  let quoted = false;
-  let started = false;
-  for (let index = 0; index < text.length; index += 1) {
-    const character = text[index];
-    if (character === '\\' && quoted && text[index + 1] === '"') {
-      current += '"'; index += 1; started = true; continue;
-    }
-    if (character === '"') { quoted = !quoted; started = true; continue; }
-    if (!quoted && /\s/.test(character)) {
-      if (started) { parts.push(current); current = ''; started = false; }
-      continue;
-    }
-    current += character;
-    started = true;
-  }
-  if (started) parts.push(current);
-  return parts;
-}
 
 function buildSettings(config) {
   const root = $('#settings-fields');
@@ -738,12 +822,6 @@ function buildSettings(config) {
           ]));
           continue;
         }
-      } else if (field.type === 'command') {
-        // A list of argv parts, edited as one line. Splitting here rather than in
-        // Python keeps the stored config a real list -- no shell ever sees this
-        // string, so an argument with a space has to survive as one argument.
-        input = el('input', { type: 'text', 'data-path': field.path, 'data-kind': 'command', id: field.path });
-        input.value = joinCommand(value);
       } else {
         input = el('input', { type: field.type, 'data-path': field.path, id: field.path });
         input.value = value ?? '';
@@ -767,8 +845,7 @@ function collectSettings() {
     else if (input.type === 'password') {
       if (!input.value) continue;   // untouched: keep whatever is stored
       value = input.value;
-    } else if (input.dataset.kind === 'command') value = splitCommand(input.value);
-    else value = input.value;
+    } else value = input.value;
     if (value === null) continue;
 
     const keys = path.split('.');
@@ -788,25 +865,45 @@ function render() {
   // Re-rendering a section discards what the user is typing in it, so only the
   // section holding the focused field is held back. Previously any focused
   // input froze the whole live view, including recording status.
-  const active = document.activeElement;
-  const frozen = sel => isEditing() && active && active.closest(sel);
-  if (!frozen('#channels-panel')) renderChannels(data);
-  if (!frozen('#live-panel')) renderLive(data);
-  if (!frozen('#sessions-panel')) renderSessions(data);
+  if (!typingIn('#channels')) renderChannels(data);
+  if (!typingIn('#live')) renderLive(data);
+  if (!typingIn('#sessions')) renderSessions(data);
   renderJobs(data);
 }
 
-async function refresh() {
+function paintRefreshButton() {
+  const node = $('#refresh');
+  if (!node) return;
+  // The 2s poll must not flicker this control. Only an operator-initiated
+  // refresh — in flight or queued behind the current pass — changes it.
+  const busy = state.refreshing || state.wantForce;
+  node.disabled = busy;
+  node.textContent = busy ? 'Refreshing' : 'Refresh';
+}
+
+async function refresh(options = {}) {
+  if (options.force) state.wantForce = true;
+  paintRefreshButton();
   if (state.polling) return;      // a slow response must not queue another
   state.polling = true;
+  const kick = state.wantForce;
+  state.wantForce = false;
+  state.refreshing = kick;
+  paintRefreshButton();
   try {
-    state.data = await api('/api/state');
+    // Manual refresh re-checks live status now (the watcher interval is 60s
+    // by default). The poll stays a cheap GET of whatever is already known.
+    state.data = kick ? await api('/api/refresh', {}) : await api('/api/state');
     state.lastRefresh = Date.now();
     state.refreshError = null;
     renderConnection();
     render();
-    for (const id of state.expanded) {
-      if (!state.outputs.has(id)) loadOutputs(id);
+    if (kick) {
+      for (const id of state.expanded) loadOutputs(id);
+    } else {
+      for (const id of state.expanded) {
+        if (!state.outputs.has(id)) loadOutputs(id);
+      }
     }
   } catch (err) {
     state.refreshError = err.message || 'Could not reach the dashboard server';
@@ -814,7 +911,20 @@ async function refresh() {
     console.warn('state', err);
   } finally {
     state.polling = false;
+    state.refreshing = false;
+    paintRefreshButton();
+    if (state.wantForce) refresh({ force: true });
   }
+}
+
+function setSettingsOpen(open) {
+  $('#settings').hidden = !open;
+  $('#settings-backdrop').hidden = !open;
+}
+
+function closeOverlays() {
+  $('#modal').hidden = true;
+  setSettingsOpen(false);
 }
 
 /* --------------------------------------------------------------------- wire */
@@ -843,17 +953,22 @@ $('#add-vod').addEventListener('submit', event => {
   }));
 });
 
+$('#session-search').addEventListener('input', () => {
+  if (state.data) renderSessions(state.data);
+});
+
 $('#settings-toggle').addEventListener('click', async () => {
   try {
     state.config = await api('/api/config');
     buildSettings(state.config);
-    $('#settings').hidden = false;
+    setSettingsOpen(true);
   } catch (err) {
     toast(err.message, true);
   }
 });
 
-$('#settings-close').addEventListener('click', () => { $('#settings').hidden = true; });
+$('#settings-close').addEventListener('click', () => setSettingsOpen(false));
+$('#settings-backdrop').addEventListener('click', () => setSettingsOpen(false));
 
 $('#settings-save').addEventListener('click', async () => {
   const status = $('#settings-status');
@@ -878,6 +993,12 @@ $('#modal').addEventListener('click', event => {
 $('#modal-reveal').addEventListener('click', () => {
   if (modalFile) guard(api('/api/reveal', { artifact_id: modalFile.artifact_id }));
 });
+$('#modal-view').addEventListener('click', () => {
+  state.modalRaw = !state.modalRaw;
+  paintModalBody();
+});
+
+$('#refresh').addEventListener('click', () => { refresh({ force: true }); });
 
 document.addEventListener('click', event => {
   const target = event.target.closest('[data-toggle]');
@@ -888,9 +1009,47 @@ document.addEventListener('click', event => {
 });
 
 document.addEventListener('keydown', event => {
-  if (event.key !== 'Escape') return;
-  $('#modal').hidden = true;
-  $('#settings').hidden = true;
+  // F5 / Ctrl+R would otherwise reload the Chromium app window and drop
+  // whatever is being typed. Intercept even while a field is focused.
+  const reload = event.key === 'F5'
+    || ((event.ctrlKey || event.metaKey) && (event.key === 'r' || event.key === 'R'));
+  if (reload) {
+    event.preventDefault();
+    refresh({ force: true });
+    return;
+  }
+  if (event.key === 'Escape') {
+    closeOverlays();
+    return;
+  }
+  if (isEditing() && event.key !== 'Escape') {
+    if (event.key === '/' && document.activeElement === $('#session-search')) return;
+    return;
+  }
+  if (event.key === 'r' || event.key === 'R') {
+    event.preventDefault();
+    refresh({ force: true });
+    return;
+  }
+  if (event.key === '/' ) {
+    event.preventDefault();
+    $('#session-search').focus();
+    return;
+  }
+  if (event.key === 's' || event.key === 'S') {
+    event.preventDefault();
+    $('#settings-toggle').click();
+    return;
+  }
+  if (event.key === 'n' || event.key === 'N') {
+    event.preventDefault();
+    $('#channel-input').focus();
+    return;
+  }
+  if (event.key === 'v' || event.key === 'V') {
+    event.preventDefault();
+    $('#vod-input').focus();
+  }
 });
 
 async function boot() {
@@ -906,6 +1065,8 @@ async function boot() {
   setInterval(refresh, state.pollMs);
   // Expanded sessions get their file lists refreshed less often than the state poll.
   setInterval(() => { for (const id of state.expanded) loadOutputs(id); }, 15000);
+  const open = new URLSearchParams(location.search).get('open');
+  if (open === 'settings') $('#settings-toggle').click();
 }
 
 boot();

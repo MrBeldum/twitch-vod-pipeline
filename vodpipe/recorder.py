@@ -826,7 +826,19 @@ class Recorder:
         duration = max(0.0, end - start)
         chunk = session.chunk(index)
         if chunk is None:
-            chunk = self._open_chunk(index, 0.0)
+            # ffmpeg can emit a csv row for a successor we never opened
+            # (the floor refused it, or Stop landed on the rollover). That
+            # chunk is still on disk and must not be registered at offset 0
+            # overlapping c000.
+            offset = 0.0
+            if index > 0:
+                previous = session.chunk(index - 1)
+                if previous is not None:
+                    offset = previous.session_offset + previous.duration
+                elif session.chunks:
+                    offset = max(item.session_offset + item.duration
+                                 for item in session.chunks)
+            chunk = self._open_chunk(index, offset)
 
         ts_path = session.path / "live" / chunk.ts_name
         size = ts_path.stat().st_size if ts_path.exists() else 0

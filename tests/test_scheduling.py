@@ -262,20 +262,23 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("MISSING", output)
 
-    def test_an_enabled_api_summariser_without_a_key_is_reported(self):
-        """And this used to pass silently, for a setup that cannot work."""
+    def test_an_enabled_summariser_needs_the_claude_executable(self):
+        """The engine spends a subscription rather than a key, so what doctor
+        has to check is the executable. It used to pass silently for a setup
+        that cannot work."""
         code, output = self.run_doctor(
             transcription={"enabled": False},
-            summary={"enabled": True, "provider": "anthropic-api"},
+            summary={"enabled": True, "provider": "claude-cli"},
+            tools={"claude": str(Path(self.tmp) / "no-such-claude.exe")},
             recording={"free_space_floor_gb": 0})
-        self.assertEqual(code, 1)
-        self.assertIn("anthropic_api_key", output)
+        self.assertEqual(code, 1, output)
+        self.assertIn("summary.provider is claude-cli", output)
 
-    def test_an_api_summariser_with_a_key_passes(self):
+    def test_rundowns_switched_off_do_not_need_claude(self):
         code, output = self.run_doctor(
             transcription={"enabled": False},
-            summary={"enabled": True, "provider": "anthropic-api"},
-            secrets={"anthropic_api_key": "sk-test"},
+            summary={"enabled": False},
+            tools={"claude": str(Path(self.tmp) / "no-such-claude.exe")},
             recording={"free_space_floor_gb": 0})
         self.assertEqual(code, 0, output)
 

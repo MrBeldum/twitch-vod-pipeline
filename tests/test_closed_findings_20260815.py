@@ -14,26 +14,15 @@ from pathlib import Path
 from vodpipe.asr import TranscriptionError, parse_deepgram
 from vodpipe.exports import publication_is_consistent, write_exports
 from vodpipe.media import _fs_limit
-from vodpipe.models import _is_retryable_status
 from vodpipe.snapshot import SnapshotRequest, SnapshotService, precise_output_cap
 from vodpipe.state import Session
 from vodpipe.transcript import Word, load_words
 
 
-class ModelRetryTests(unittest.TestCase):
-    """AUD2-033: every 5xx model response is retryable, not a hand-picked four."""
-
-    def test_all_5xx_are_retryable(self):
-        for code in (500, 502, 503, 504, 505, 507, 508, 510, 511, 520, 529, 599):
-            self.assertTrue(_is_retryable_status(code), code)
-
-    def test_timeout_and_rate_limit_are_retryable(self):
-        self.assertTrue(_is_retryable_status(408))
-        self.assertTrue(_is_retryable_status(429))
-
-    def test_client_errors_are_not_retryable(self):
-        for code in (400, 401, 403, 404, 409, 422):
-            self.assertFalse(_is_retryable_status(code), code)
+# AUD2-033 -- "every 5xx model response is retryable, not a hand-picked four" --
+# was tested here against `models._is_retryable_status`. It went with the HTTP
+# transports on 2026-08-19: the surviving engine is a subprocess, and a process
+# exit code carries no such classification. See tests/test_retirement.py.
 
 
 def _deepgram(words, transcript=None):

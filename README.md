@@ -7,7 +7,8 @@ pipeline — and hands you everything you need to start editing:
 - its **proxy**, named so Premiere's *Attach Proxies* finds it;
 - a **Static Transcript JSON** with per-word timings, which is what turns on text-based
   editing;
-- an objective **rundown** of what happened, so you know where to start;
+- an editor **report** (`report.md`) of what happened, with timestamps, best
+  moments, Shorts candidates, and chat-backed evidence of what landed;
 - the **Deepgram word stream** the rest is derived from, and the **verbatim API responses**
   beside it;
 - **SRT** captions and a plain-text transcript;
@@ -22,7 +23,8 @@ on your behalf about what to remove. What it gives you is a clean master and a t
 good enough to cut from.
 
 Pure Python 3.14 standard library — no pip install, no virtualenv, no wheels to build.
-External binaries only: `ffmpeg`, `ffprobe`, `streamlink`, and optionally `claude`.
+External binaries only: `ffmpeg`, `ffprobe`, `streamlink`, and optionally `claude`
+(Claude Code) and/or `grok` (Grok Build) for the editor report.
 
 ---
 
@@ -30,12 +32,22 @@ External binaries only: `ffmpeg`, `ffprobe`, `streamlink`, and optionally `claud
 
 ```
 vodpipe.cmd doctor          # check the environment
-vodpipe.cmd                 # start the dashboard at http://127.0.0.1:8420
+vodpipe.cmd install         # compile VODPipeline.exe and register it with Windows
+vodpipe.cmd                 # open the desktop app (Chromium/Chrome window)
 ```
+
+After `install`, Windows shows **VOD Pipeline** in the Start Menu and in
+Settings → Apps. Double-click `VODPipeline.exe`, or `Start VOD Pipeline.vbs`,
+for the same thing without a console. The window is Chromium or Google Chrome
+in app mode — never Edge.
+
+`vodpipe.cmd dashboard` still runs the local web server only, if you want a
+browser tab instead of a window.
 
 Then in the dashboard: paste your Deepgram key under **Settings**, add a channel, and
 either press **Record** or leave **auto** ticked so it starts on its own when that
-channel goes live.
+channel goes live. **Refresh** (R or F5) re-checks live status immediately rather
+than waiting for the watcher interval; the page itself does not reload.
 
 To run it without a browser:
 
@@ -64,7 +76,8 @@ Desktop\twitch-vods\<channel>\<session-id>\
       <channel>_<session>_c000_Proxy.mp4  ← auto-deleted after 1 day
   transcripts\
     c000\                  ← only the four things you actually open
-      rundown.md           ← objective rundown: read this first
+      report.md            ← editor report: read this first
+                             (timeline, best moments, Shorts, titles)
       premiere.json        ← Static Transcript, enables text-based editing
       transcript.srt       ← captions
       censor-words.txt     ← terms from your master list that actually occur
@@ -72,6 +85,9 @@ Desktop\twitch-vods\<channel>\<session-id>\
         words.json         ← the word stream every export is rebuilt from
         transcript.json    ← segments + words, for anything you build yourself
         transcript.txt     ← timestamped plain text
+        chat.json          ← Twitch chat for this chunk (live IRC or VOD comments)
+        chat.txt           ← the same, readable
+        moments.json       ← content-aware chat peaks (laugh / hype / clip-call)
         exports.json       ← which generation the files beside it belong to
         deepgram\          ← the provider's verbatim responses, one per request
           0001.json  0002.json  ...
@@ -208,7 +224,7 @@ about your footage — that is the point.
 
 | File | What it is | What it is for |
 |---|---|---|
-| `rundown.md` | an objective account of the chunk | read it first and you know where to start |
+| `report.md` | editor's cut list: timeline, best moments, Shorts, titles | read it first and you know what to cut |
 | `premiere.json` | Adobe Static Transcript, per-word timings | import it and text-based editing works |
 | `transcript.srt` | captions | subtitles, or an import into anything that reads SRT |
 | `censor-words.txt` | terms from your master list that actually occur | paste into Premiere's censored-words filter |
@@ -220,6 +236,8 @@ about your footage — that is the point.
 | `words.json` | the Deepgram word stream, normalised | every other file is derived from this one; `republish` rebuilds them all from it without touching Deepgram |
 | `deepgram/NNNN.json` | the provider's answers, verbatim | what was actually said back, before we made anything of it |
 | `transcript.txt` | timestamped plain text | searching, quoting, skimming |
+| `chat.json` / `chat.txt` | Twitch chat for this chunk | live via IRC, VODs via Twitch's comments API (same as TwitchDownloader) |
+| `moments.json` | content-aware chat peaks | laugh emotes, copypasta, clip-calls — not just messages/second |
 | `transcript.json` | segments and words | for anything you build yourself |
 | `exports.json` | which generation these files describe | lets the pipeline tell a stale export set from a current one |
 
@@ -353,46 +371,49 @@ transcript slice for a channel that was still recording.
 verified by actually encoding two seconds of test pattern, because a build listing an
 encoder does not prove the GPU accepts it — and fall back to `libx264` otherwise.
 
-**Summaries** run through `claude -p` against your subscription by default, and the
-engine is pluggable — see below.
+**Reports** run through Claude Code (`claude -p`) or Grok Build (`grok -p`) — see below.
 
-### Rundown engines
+**Chat** is captured for live broadcasts over IRC and for VODs through the same GraphQL
+comments API TwitchDownloader uses. Per-chunk `source/chat.json` plus a content-aware
+moment analysis (laugh emotes, copypasta, clip-calls — not just chat speed) are handed
+to the report engine. A chat failure never fails a recording.
 
-A rundown is one background call per chunk. The default spends your Claude subscription,
-which is free until it isn't: on 2026-08-18 a seven-hour recording hit
-`You've hit your session limit` and lost the rundown for that chunk. So pick whichever
-spare capacity you have:
+### Report engine
+
+A report is one background call per chunk. Two engines, both local subscription CLIs:
 
 | `summary.provider` | What it spends | Needs |
 |---|---|---|
 | `claude-cli` *(default)* | your Claude subscription, via `claude -p` | the `claude` executable |
-| `cli` | any other subscription CLI | `summary.cli_command` |
-| `anthropic-api` | an Anthropic API key | `secrets.anthropic_api_key` |
-| `kimi-api` | a Kimi (Moonshot) API key | `secrets.kimi_api_key` |
-| `deepseek-api` | a DeepSeek API key | `secrets.deepseek_api_key` |
-| `openai-api` | an OpenAI API key | `secrets.openai_api_key`, `summary.model` |
-| `openai-compatible` | anything else OpenAI-shaped | `summary.base_url`, `secrets.openai_compatible_api_key` |
-| `none` | nothing — rundowns off | |
+| `grok-cli` | your Grok subscription, via `grok -p` (Grok 4.6 unless you name another model) | the `grok` executable |
+| `none` | nothing — reports off | |
 
-`summary.model` names the model **for whichever engine is selected**, and blank means that
-engine's own default (`kimi-k3`, `deepseek-v4-pro`, `claude-sonnet-5`). If the name is
-wrong — or missing where there is no sensible default — the error lists the models the
-endpoint actually offers, because model ids move faster than this README does.
+`summary.model` is passed through as `--model`. Leave it blank: Claude Code picks from
+the subscription; Grok uses its CLI default, which is currently **Grok 4.6**
+(reported in usage as `grok-4.6-build`). The old alias `grok-build` is not a valid
+model id on Grok CLI 1.0.5 and is rewritten to blank on load.
 
-`openai-compatible` covers OpenRouter, Groq, Together, and a local llama.cpp or Ollama
-server: set `summary.base_url` to the API root, e.g. `http://127.0.0.1:11434/v1`.
+For Claude Code the transcript arrives on **stdin**. Grok Build does not read stdin —
+the prompt is written to a temp file and passed as `--prompt-file`, with `--cwd` pointed
+at an empty directory so Grok does not walk this repository. A two-hour transcript is
+far past the Windows command-line length limit either way. The report is whatever the
+CLI writes to **stdout**. A failed attempt is retried up to `summary.max_retries` times
+(default 3), all attempts sharing the one `summary.timeout_seconds` deadline — a
+non-zero exit is not classifiable from outside, so the retry is unconditional and bounded.
 
-**A ChatGPT or Gemini subscription has no API of its own** — those sell a seat, not an
-endpoint — so use `cli` with that vendor's own command:
+**Paid HTTP APIs were tried and withdrawn.** On 2026-08-18 a seven-hour recording hit
+`You’ve hit your session limit` and lost that chunk’s report, so the engine was made
+pluggable across the Anthropic, Kimi, DeepSeek and OpenAI APIs. The paid APIs then
+failed on the ordinary case, twice in one night: Kimi refused one report for exceeding
+an organization concurrency of **one** — against a pipeline whose whole shape is
+background jobs — and refused the next as `high risk` content, having been handed a
+Twitch transcript. They were removed on 2026-08-19. A fallback that fails on the
+ordinary case is not a fallback. `grok-cli` is a second *subscription CLI*, the same
+shape as `claude-cli`, not a paid HTTP API.
 
-```json
-"summary": { "provider": "cli", "cli_command": ["codex", "exec", "--sandbox", "read-only"] }
-```
-
-The transcript always arrives on the command's **stdin**, because a two-hour transcript is
-far past the Windows command-line length limit, and the rundown is whatever it writes to
-**stdout**. Put `{system}` in an argument and the instruction goes there instead of being
-prepended to stdin — `["gemini", "-p", "{system}"]`.
+If your `config.json` still names one of the removed APIs, it is rewritten to `claude-cli`
+on load rather than refused, and the API keys beside it are dropped from the file on the next
+save.
 
 ---
 
@@ -522,9 +543,9 @@ This corrects an earlier claim in this file, which said capture worked at full q
 from Korea without a VPN. It does not. That conclusion came from spot-checking channels
 that happened to have a 1080p60 *transcode*, which masked the missing source rendition.
 
-Everything else is geography-neutral: Deepgram and the Anthropic API are reachable
-globally, and the dashboard is loopback-only. Two things to keep in mind when recording
-over a VPN:
+Everything else is geography-neutral: Deepgram is reachable globally, `claude -p` runs
+locally against your subscription, and the dashboard is loopback-only. Two things to
+keep in mind when recording over a VPN:
 
 - **Throughput matters.** Source 1080p60 is roughly 7 GB/hr sustained. A VPN endpoint
   that cannot hold that will show up as buffering and dropped segments, not as an error.
@@ -559,9 +580,8 @@ Everything lives in `config.json` next to the app — gitignored, created on fir
 `config.example.json` documents the common keys; the full set of defaults, with comments,
 is in `vodpipe/config.py`.
 
-Secrets resolve config first, then environment (`DEEPGRAM_API_KEY`, `TWITCH_OAUTH_TOKEN`,
-`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `KIMI_API_KEY`, `DEEPSEEK_API_KEY`,
-`OPENAI_COMPATIBLE_API_KEY`), so a shell export works too.
+Secrets resolve config first, then environment (`DEEPGRAM_API_KEY`,
+`TWITCH_OAUTH_TOKEN`), so a shell export works too.
 
 The validator is total and transactional — a rejected save changes nothing — and it is
 strict about unknown keys, so a typo is refused rather than silently ignored. The one
@@ -625,7 +645,7 @@ and no network access are needed anywhere in the suite.
 | `vodpipe/exports.py` | Static Transcript JSON, SRT, text, censor list |
 | `vodpipe/asr.py` | Deepgram client |
 | `vodpipe/summarize.py` | the rundown prompt |
-| `vodpipe/models.py` | `claude -p` and Anthropic API transports, with retry and truncation checks |
+| `vodpipe/models.py` | the `claude -p` transport, with its retry and its deadline |
 | `vodpipe/config.py`, `schema.py` | layered defaults, secrets, and total transactional validation |
 | `vodpipe/snapshot.py` | early cut geometry |
 | `vodpipe/server.py` | dashboard API |

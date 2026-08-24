@@ -108,6 +108,15 @@ class ServerTests(unittest.TestCase):
             self.assertIn(key, payload)
         self.assertIn("free_bytes", payload["disk"])
 
+    def test_refresh_returns_state_and_is_not_a_get(self):
+        status, payload = json_request("/api/refresh", {})
+        self.assertEqual(status, 200)
+        for key in ("channels", "sessions", "jobs", "disk", "capabilities"):
+            self.assertIn(key, payload)
+        get_status, get_payload = json_request("/api/refresh")
+        self.assertEqual(get_status, 404)
+        self.assertIn("error", get_payload)
+
     def test_unknown_endpoint_is_404(self):
         status, payload = json_request("/api/nope")
         self.assertEqual(status, 404)

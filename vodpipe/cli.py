@@ -35,8 +35,8 @@ from .util import (
 # Every subcommand the parser knows. Used to decide whether an argv already
 # names one before defaulting to the dashboard; keep in step with build_parser().
 SUBCOMMANDS = frozenset({
-    "dashboard", "record", "vod", "snapshot", "transcribe", "doctor", "sessions",
-    "republish",
+    "app", "dashboard", "record", "vod", "snapshot", "transcribe", "doctor",
+    "sessions", "republish", "install", "uninstall",
 })
 
 
@@ -89,14 +89,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="vodpipe",
         description="Record Twitch streams into Premiere-ready masters, proxies, "
-                    "transcripts and rundowns.",
+                    "transcripts and editor reports.",
     )
     parser.add_argument("--config", type=Path, default=CONFIG_PATH,
                         help="path to config.json")
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command")
 
-    dashboard = sub.add_parser("dashboard", help="run the local web dashboard")
+    app = sub.add_parser(
+        "app", help="open the desktop app (local server + its own window)")
+    app.add_argument("--port", type=int)
+    app.add_argument("--no-window", action="store_true",
+                     help="run the local server without opening a window")
+
+    dashboard = sub.add_parser(
+        "dashboard", help="run the local web server only (no desktop window)")
     dashboard.add_argument("--port", type=int)
     dashboard.add_argument("--no-browser", action="store_true")
 
@@ -138,6 +145,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("doctor", help="check the environment")
     sub.add_parser("sessions", help="list known sessions")
+    sub.add_parser(
+        "install",
+        help="compile VODPipeline.exe and register it as a Windows app "
+             "(Start Menu, Apps & Features)")
+    sub.add_parser("uninstall", help="remove the Windows app registration")
 
     return parser
 
@@ -146,25 +158,27 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     if argv is None:
         argv = sys.argv[1:]
-    # `python -m vodpipe` with no subcommand means the dashboard. Normalising here
-    # rather than defaulting later means args always carries the dashboard flags;
-    # otherwise cmd_dashboard() dies on a missing `args.port`.
+    # `python -m vodpipe` with no subcommand means the desktop app. Normalising
+    # here rather than defaulting later means args always carries the app flags;
+    # otherwise cmd_app() dies on a missing `args.port`.
     #
     # Testing "is there any non-flag argument" was not enough: `vodpipe --config
     # PATH` has one -- PATH -- so nothing was appended, `args.command` stayed
     # None, and the dashboard fell over on the missing flags. Look for an actual
     # subcommand instead.
     if not _has_subcommand(argv):
-        argv = list(argv) + ["dashboard"]
+        argv = list(argv) + ["app"]
     args = parser.parse_args(argv)
     setup_logging(verbose=args.verbose)
 
     config = Config.load(args.config)
-    command = args.command or "dashboard"
+    command = args.command or "app"
 
     try:
         if command == "doctor":
             return cmd_doctor(config)
+        if command == "app":
+            return cmd_app(config, args)
         if command == "dashboard":
             return cmd_dashboard(config, args)
         if command == "record":
@@ -179,6 +193,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_transcribe(config, args)
         if command == "sessions":
             return cmd_sessions(config)
+        if command == "install":
+            return cmd_install()
+        if command == "uninstall":
+            return cmd_uninstall()
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130
@@ -221,41 +239,28 @@ def cmd_doctor(config: Config) -> int:
     provider = (config.get("summary.provider") or "claude-cli").lower()
     summarising = bool(config.get("summary.enabled", True)) and provider != "none"
 
-    from .models import (API_PROVIDERS, PROVIDER_SECRETS,
-                         provider_default_model)
-
     print("Tools")
-    claude_needed = summarising and provider == "claude-cli"
-    for name in ("ffmpeg", "ffprobe", "streamlink", "claude"):
+    engine_tool = {"claude-cli": "claude", "grok-cli": "grok"}.get(provider)
+    for name in ("ffmpeg", "ffprobe", "streamlink", "claude", "grok"):
         override = (config.get(f"tools.{name}") or "").strip()
         path = find_tool(name, override or None)
-        required = name != "claude" or claude_needed
+        required = name not in ("claude", "grok") or (
+            summarising and name == engine_tool)
         mark = "ok " if path else ("MISSING" if required else "absent")
         if not path and required:
             ok = False
         note = ""
-        if name == "claude" and not path and claude_needed:
-            note = "  <- summary.provider is claude-cli"
+        if name == engine_tool and not path and required:
+            note = f"  <- summary.provider is {provider}"
         print(f"  {name:<12} {mark:<8} {path or ''}{note}")
 
     print("\nSecrets")
-    # One row per engine key, with only the selected engine's key required. The
-    # provider table is the source of truth, so a new engine appears here
-    # without this function being edited.
-    engine_keys = [
-        ("anthropic_api_key", "anthropic-api"),
-        ("openai_api_key", "openai-api"),
-        ("kimi_api_key", "kimi-api"),
-        ("deepseek_api_key", "deepseek-api"),
-        ("openai_compatible_api_key", "openai-compatible"),
-    ]
+    # The rundown engine spends a subscription, not a key, so there is no
+    # summariser row here any more: `claude -p` either runs or it does not,
+    # and the Tools block above is where that shows up.
     rows = [
         ("deepgram_api_key", "required for transcription", transcribing),
         ("twitch_oauth_token", "optional, enables the ad-free path", False),
-    ] + [
-        (key, f"only for the {owner} summariser",
-         summarising and provider == owner)
-        for key, owner in engine_keys
     ]
     for key, note, needed in rows:
         present = bool(config.secret(key))
@@ -263,31 +268,15 @@ def cmd_doctor(config: Config) -> int:
         print(f"  {key:<26} {state:<8} ({note})")
         if needed and not present:
             ok = False
-    if summarising and provider == "cli":
-        command = [str(part)
-                   for part in (config.get("summary.cli_command") or [])
-                   if str(part).strip()]
-        state = "set" if command else "MISSING"
-        detail = " ".join(command) if command else "the command to run"
-        print(f"  {'summary.cli_command':<26} {state:<8} ({detail})")
-        if not command:
-            ok = False
 
     print("\nFeatures")
     print(f"  transcription {'on' if transcribing else 'off'}")
-    print(f"  rundowns     {provider if summarising else 'off'}")
-    if summarising and PROVIDER_SECRETS.get(provider):
-        model = (str(config.get("summary.model", "") or "").strip()
-                 or provider_default_model(provider))
-        entry = API_PROVIDERS.get(provider)
-        base = (str(config.get("summary.base_url", "") or "").strip()
-                or (entry.base_url if entry else ""))
-        print(f"  model        "
-              f"{model or 'MISSING -- set summary.model for this engine'}")
-        if base:
-            print(f"  endpoint     {base}")
-        if not model:
-            ok = False
+    print(f"  reports      {provider if summarising else 'off'}")
+    print(f"  chat         {'on' if config.get('chat.enabled', True) else 'off'}")
+    model = str(config.get("summary.model", "") or "").strip()
+    if summarising and model:
+        # Blank is the normal setting: `claude -p` chooses for itself.
+        print(f"  model        {model}")
     print(f"  proxies      {'on' if config.get('proxies.enabled', True) else 'off'}")
 
     print("\nCapture quality")
@@ -340,6 +329,43 @@ def cmd_doctor(config: Config) -> int:
 
     print("\n" + ("Ready." if ok else "Not ready -- see the items above."))
     return 0 if ok else 1
+
+
+def cmd_install() -> int:
+    """Compile the Windows host and register it with Explorer."""
+    from .winapp import APP_NAME, install
+    try:
+        exe = install()
+    except Exception as exc:
+        print(f"install failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"Installed {APP_NAME}.")
+    print(f"  executable  {exe}")
+    print("  start menu  Programs\\VOD Pipeline")
+    print("  apps list   Settings > Apps > Installed apps")
+    return 0
+
+
+def cmd_uninstall() -> int:
+    from .winapp import uninstall
+    try:
+        uninstall()
+    except Exception as exc:
+        print(f"uninstall failed: {exc}", file=sys.stderr)
+        return 1
+    print("Removed the Windows app registration.")
+    return 0
+
+
+def cmd_app(config: Config, args) -> int:
+    """Desktop window around the same local server the dashboard command runs."""
+    from .app import run_app
+
+    return run_app(
+        config,
+        port=getattr(args, "port", None),
+        open_window=not getattr(args, "no_window", False),
+    )
 
 
 def cmd_dashboard(config: Config, args) -> int:
@@ -429,7 +455,7 @@ def cmd_record(config: Config, args) -> int:
         # every path, including a failed start, so a partially started pipeline
         # is never left with live workers.
         try:
-            print("finishing up (transcript, remux, proxy, rundown)...")
+            print("finishing up (transcript, remux, proxy, chat, report)...")
         finally:
             pipeline.shutdown_until_stopped()
 
@@ -455,7 +481,7 @@ def cmd_record(config: Config, args) -> int:
 def cmd_vod(config: Config, args) -> int:
     """Download a Twitch VOD and run it through the full pipeline.
 
-    Same masters, proxies, per-chunk transcripts and rundowns as a live recording;
+    Same masters, proxies, per-chunk transcripts, chat and reports as a live recording;
     the only difference is the source is an archived VOD instead of a live edge.
     """
     from .channels import InvalidVod, parse_vod
@@ -486,7 +512,7 @@ def cmd_vod(config: Config, args) -> int:
                 pass
     finally:
         try:
-            print("finishing up (transcript, remux, proxy, rundown)...")
+            print("finishing up (transcript, remux, proxy, chat, report)...")
         finally:
             pipeline.shutdown_until_stopped()
 

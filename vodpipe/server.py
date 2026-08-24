@@ -73,6 +73,10 @@ ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1"}
 TRANSCRIPT_OUTPUT_NAMES = frozenset({
     *PUBLISHED_EXPORTS,
     f"{SOURCE_DIR}/{MANIFEST_NAME}",
+    f"{SOURCE_DIR}/chat.json",
+    f"{SOURCE_DIR}/chat.txt",
+    f"{SOURCE_DIR}/moments.json",
+    "report.md",
     "rundown.md",
 })
 SESSION_OUTPUT_NAMES = frozenset({"index.md"})
@@ -422,6 +426,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/chunk/summarize": self._summarize,
             "/api/config": self._save_config,
             "/api/reveal": self._reveal,
+            "/api/refresh": self._refresh,
         }
         handler = handlers.get(route)
         if handler is None:
@@ -607,7 +612,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             job = self.pipeline.resummarize(session, chunk)
         except RuntimeError as exc:
             raise ApiError(str(exc), HTTPStatus.CONFLICT)
-        return self._accepted(job, "this rundown")
+        return self._accepted(job, "this report")
 
     def _save_config(self, body: dict[str, Any]) -> Any:
         if not isinstance(body, dict):
@@ -628,6 +633,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             raise ApiError("could not save the configuration; see the server log",
                            HTTPStatus.INTERNAL_SERVER_ERROR)
         return {"ok": True, "config": self.config.redacted()}
+
+    def _refresh(self, body: dict[str, Any]) -> Any:
+        """Re-check live status now. Body is ignored; this is a button, not a form."""
+        return self.pipeline.refresh_now()
 
     def _reveal(self, body: dict[str, Any]) -> Any:
         artifact_id = body.get("artifact_id")
@@ -806,8 +815,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if STATIC_DIR not in target.parents or not target.is_file():
             self._send(HTTPStatus.NOT_FOUND, b"not found", "text/plain")
             return
-        content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-        if content_type.startswith("text/") or content_type.endswith("javascript"):
+        extra_types = {
+            ".webmanifest": "application/manifest+json",
+            ".svg": "image/svg+xml",
+            ".ico": "image/x-icon",
+        }
+        content_type = extra_types.get(target.suffix.lower()) \
+            or mimetypes.guess_type(target.name)[0] \
+            or "application/octet-stream"
+        if content_type.startswith("text/") or content_type.endswith("javascript") \
+                or content_type.endswith("json"):
             content_type += "; charset=utf-8"
         self._send(HTTPStatus.OK, target.read_bytes(), content_type)
 

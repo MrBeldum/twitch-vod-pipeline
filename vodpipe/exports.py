@@ -85,7 +85,7 @@ MANIFEST_NAME = "exports.json"
 # exist for recovery.
 SOURCE_DIR = "source"
 
-# What you open while editing, in the chunk folder itself, beside `rundown.md`.
+# What you open while editing, in the chunk folder itself, beside `report.md`.
 # `premiere.json` is the import that turns on text-based editing; the SRT is the
 # caption track; the censor list is pasted into Premiere's own censoring.
 EDIT_EXPORTS = (

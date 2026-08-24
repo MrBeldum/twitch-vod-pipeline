@@ -192,41 +192,6 @@ def _proxy_url(value: Any, path: str) -> str:
     return text
 
 
-def _api_base_url(value: Any, path: str) -> str:
-    """The root of an OpenAI-shaped API, or empty to use the provider's own.
-
-    Checked here rather than at request time because a base URL with a typo
-    fails once per rundown, in the background, hours after it was typed.
-    """
-    if not isinstance(value, str):
-        raise ConfigError(f"{path} must be text")
-    text = _reject_unusable_characters(value.strip(), path)
-    if not text:
-        return ""
-    if len(text) > 512:
-        raise ConfigError(f"{path} is too long")
-    try:
-        parsed = urlparse(text)
-    except ValueError as exc:
-        raise ConfigError(f"{path} is not a valid URL") from exc
-    if parsed.scheme.lower() not in ("http", "https"):
-        raise ConfigError(f"{path} must start with http:// or https://")
-    try:
-        hostname = parsed.hostname
-        port = parsed.port
-    except ValueError as exc:
-        raise ConfigError(f"{path} has an invalid port") from exc
-    if not hostname:
-        raise ConfigError(
-            f"{path} must include a host, e.g. https://openrouter.ai/api/v1")
-    if port is not None and not (0 < port <= 65535):
-        raise ConfigError(f"{path} has an invalid port")
-    if parsed.query or parsed.fragment:
-        raise ConfigError(
-            f"{path} must be the API root, with no query string or fragment")
-    return text.rstrip("/")
-
-
 def _channel_list(value: Any, path: str) -> list[str]:
     if not isinstance(value, list):
         raise ConfigError(f"{path} must be a list")
@@ -251,6 +216,47 @@ def _string_list(value: Any, path: str) -> list[str]:
 
 
 # ------------------------------------------------------------------------ schema
+
+# `summary.provider` values naming an engine removed on 2026-08-19. A retired
+# *value* is rewritten to the engine that remains rather than refused, for the
+# same reason a retired *key* is dropped rather than rejected: retirement exists
+# so that removing a feature does not become "the application will not start on
+# the machine that had it", and that failure does not care which half of the
+# setting the removed thing lived in. An installed config.json selecting
+# `kimi-api` is exactly the file this repository was running the day before.
+#
+# Rewriting is safe here specifically because the engines were interchangeable:
+# they answered the same prompt with the same kind of text, so falling back to
+# `claude-cli` produces the rundown the operator was asking for. It would not be
+# safe for a setting whose values mean different outcomes.
+RETIRED_PROVIDERS = frozenset({
+    "anthropic-api",
+    "kimi-api",
+    "deepseek-api",
+    "openai-api",
+    "openai-compatible",
+    "cli",
+})
+
+# Retired *values* of the still-live `summary.model` key. `grok-build` was the
+# Grok TUI's agent alias; Grok CLI 1.0.5 rejects it as an unknown model id and
+# the current default is Grok 4.6. Blank means "whatever the CLI defaults to".
+RETIRED_MODELS = {
+    "grok-build": "",
+}
+
+
+def _summary_provider(value: Any, path: str) -> str:
+    if isinstance(value, str) and value.strip().lower() in RETIRED_PROVIDERS:
+        return "claude-cli"
+    return _choice(*PROVIDER_NAMES)(value, path)
+
+
+def _summary_model(value: Any, path: str) -> str:
+    text = _text(max_length=64)(value, path)
+    replacement = RETIRED_MODELS.get(text.strip().lower())
+    return text if replacement is None else replacement
+
 
 SCHEMA: dict[str, Callable[[Any, str], Any]] = {
     "paths.masters_root": _text(allow_empty=False),
@@ -301,15 +307,17 @@ SCHEMA: dict[str, Callable[[Any, str], Any]] = {
     "snapshots.max_per_session": _number(1, 16, integer=True),
 
     "summary.enabled": _boolean,
-    "summary.provider": _choice(*PROVIDER_NAMES),
+    "summary.provider": _summary_provider,
     # Empty is legal and means "the selected engine's default model".
-    "summary.model": _text(max_length=64),
-    "summary.base_url": _api_base_url,
-    "summary.cli_command": _string_list,
+    "summary.model": _summary_model,
     "summary.timeout_seconds": _number(10, 7200),
     "summary.max_tokens": _number(256, 200000, integer=True),
     "summary.max_retries": _number(1, 10, integer=True),
     "summary.min_words": _number(0, 100000, integer=True),
+
+    "chat.enabled": _boolean,
+    "chat.vod_threads": _number(1, 16, integer=True),
+    "chat.timeout_seconds": _number(10, 7200),
 
     "ads.log_events": _boolean,
     "ads.event_patterns": _string_list,
@@ -329,16 +337,12 @@ SCHEMA: dict[str, Callable[[Any, str], Any]] = {
 
     "secrets.deepgram_api_key": _text(max_length=512),
     "secrets.twitch_oauth_token": _text(max_length=512),
-    "secrets.anthropic_api_key": _text(max_length=512),
-    "secrets.openai_api_key": _text(max_length=512),
-    "secrets.kimi_api_key": _text(max_length=512),
-    "secrets.deepseek_api_key": _text(max_length=512),
-    "secrets.openai_compatible_api_key": _text(max_length=512),
 
     "tools.ffmpeg": _text(),
     "tools.ffprobe": _text(),
     "tools.streamlink": _text(),
     "tools.claude": _text(),
+    "tools.grok": _text(),
 
     # Per-channel overrides are keyed by channel name; handled separately.
     "channel_settings": lambda value, path: _channel_settings(value, path),
@@ -379,6 +383,26 @@ RETIRED_PATHS = frozenset({
     # `twitch-vod-ai-editor`, whose keys this build never knew -- which matters
     # because both tools read the same config.json when installed side by side.
     "edit",
+
+    # The other rundown engines, removed 2026-08-19 at the operator's request
+    # after two nights of paid-API failures: Kimi refused one rundown for
+    # exceeding an organization concurrency of *one* and the next as "high
+    # risk" content, having been handed an ordinary Twitch transcript. The
+    # engine is `claude-cli` or `none`; see models.py.
+    #
+    # These are retired individually rather than by section, unlike `edit`
+    # above: `summary` and `secrets` both still carry live rules, so `_walk`
+    # goes on recursing into them and the containers stay known. Retiring the
+    # keys is also what erases them from an installed config.json -- including
+    # the API keys, which are dropped on load and gone from the file after the
+    # next save.
+    "summary.base_url",
+    "summary.cli_command",
+    "secrets.anthropic_api_key",
+    "secrets.openai_api_key",
+    "secrets.kimi_api_key",
+    "secrets.deepseek_api_key",
+    "secrets.openai_compatible_api_key",
 })
 
 
@@ -442,21 +466,6 @@ def _cross_field(data: dict[str, Any]) -> None:
     if get("proxies.height", 2) % 2 != 0:
         raise ConfigError("proxies.height must be even (H.264 requires it)")
 
-    if get("summary.enabled", True):
-        provider = str(get("summary.provider", "claude-cli") or "").lower()
-        # Both of these fail at rundown time otherwise -- in the background,
-        # hours after the setting was saved, once per chunk.
-        if provider == "openai-compatible" and not str(
-                get("summary.base_url", "") or "").strip():
-            raise ConfigError(
-                "summary.base_url is required when summary.provider is "
-                "openai-compatible: there is no endpoint to send the rundown to")
-        if provider == "cli" and not [
-                part for part in (get("summary.cli_command") or []) if part.strip()]:
-            raise ConfigError(
-                "summary.cli_command is required when summary.provider is cli: "
-                "there is no command to run")
-
     host = get("dashboard.host", "127.0.0.1")
     if host not in ("127.0.0.1", "localhost"):
         raise ConfigError(
@@ -474,8 +483,28 @@ def validate(data: dict[str, Any]) -> dict[str, Any]:
         raise ConfigError("configuration must be an object")
 
     cleaned = _walk(data, "")
+    _drop_a_retired_engines_model(data, cleaned)
     _cross_field(cleaned)
     return cleaned
+
+
+def _drop_a_retired_engines_model(raw: dict[str, Any],
+                                  cleaned: dict[str, Any]) -> None:
+    """`summary.model` names a model *for the selected engine*, so it does not
+    survive the engine.
+
+    `_summary_provider` rewrites a retired engine to `claude-cli`, and it sees
+    only its own value -- which would leave `kimi-k3` sitting in `summary.model`
+    to be handed to `claude -p --model`, turning a silent fallback into a failed
+    rundown. Read from the *raw* input, because by this point the provider has
+    already been rewritten and there is nothing left to tell.
+    """
+    summary = raw.get("summary")
+    if not isinstance(summary, dict):
+        return
+    was = summary.get("provider")
+    if isinstance(was, str) and was.strip().lower() in RETIRED_PROVIDERS:
+        cleaned.get("summary", {}).pop("model", None)
 
 
 def _walk(node: dict[str, Any], prefix: str) -> dict[str, Any]:

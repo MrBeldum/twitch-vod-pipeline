@@ -1,12 +1,18 @@
 @echo off
-REM No arguments starts the dashboard; otherwise pass through to the CLI.
+REM No arguments starts the desktop app; otherwise pass through to the CLI.
 setlocal
+set ROOT=%~dp0
+set HOST=%ROOT%VODPipeline.exe
 set PY=C:\Python314\python.exe
 if not exist "%PY%" set PY=python
 
-pushd "%~dp0"
+pushd "%ROOT%"
 if "%~1"=="" (
-  "%PY%" -m vodpipe dashboard
+  if exist "%HOST%" (
+    start "" "%HOST%"
+  ) else (
+    "%PY%" -m vodpipe app
+  )
 ) else (
   "%PY%" -m vodpipe %*
 )

@@ -243,6 +243,34 @@ class FiringTests(ArmingFixture):
         self.assertEqual(self.pipeline._channels_to_probe(), [])
 
 
+class RefreshNowTests(ArmingFixture):
+    def test_refresh_now_forces_a_probe_even_if_recently_checked(self):
+        self.config.set("watcher.enabled", True)
+        self.config.set("watcher.check_seconds", 60)
+        self.pipeline.add_channel("someone")
+        self.pipeline.set_channel_setting("someone", "auto_record", False)
+        self.pipeline._live_status["someone"] = {
+            "state": OFFLINE, "live": False, "title": "",
+            "checked_at": time.time(),
+        }
+        self.live["someone"] = LIVE
+        self.pipeline._check_channel("someone")
+        self.assertEqual(self.pipeline._live_status["someone"]["state"], OFFLINE)
+
+        payload = self.pipeline.refresh_now()
+        self.assertIn("channels", payload)
+        self.settle()
+        self.assertEqual(self.pipeline._live_status["someone"]["state"], LIVE)
+
+    def test_refresh_now_does_not_probe_when_the_watcher_is_off(self):
+        self.config.set("watcher.enabled", False)
+        self.pipeline.add_channel("watched")
+        self.live["watched"] = LIVE
+        self.pipeline.refresh_now()
+        self.settle()
+        self.assertNotIn("watched", self.pipeline._live_status)
+
+
 class CancellationTests(ArmingFixture):
     def test_stop_cancels_a_pending_request(self):
         self.pipeline.request_recording("someone")

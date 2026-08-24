@@ -60,7 +60,7 @@ of them reported as something it was not. Fixed and locked in by
 |---|---|---|
 | `remux failed: Assertion next_dts <= 0x7fffffff failed at movenc.c:1236` | one sample's duration overflowed a 32-bit field, i.e. a DTS gap of >6h inside a 2h file; **not reproducible** -- re-running the identical command over the identical bytes now produces a perfect master | c002 kept only a `.ts`; its proxy then failed with "master is missing" |
 | `h264_amf failed on real media (covers 2765s but expected 7202s)` ×2 chunks ×2 encoders | the *master* was damaged, not the encoder: one `stsc` entry misaddressed every sample after it, one `co64` entry had a stray high bit and the demuxer stopped dead at 44% | 2 masters silently corrupt, their `.ts` already deleted; 20 minutes spent proving libx264 could not read them either |
-| `claude -p failed (1): You've hit your session limit · resets 6:10am` ×3 | the only engines on offer were the user's Claude subscription and an Anthropic key | c000's rundown lost; nothing to fall back to |
+| `claude -p failed (1): You've hit your session limit · resets 6:10am` ×3 | the only engines on offer were the user's Claude subscription and an Anthropic key | c000's rundown lost; nothing to fall back to. The pluggable engine this produced was itself withdrawn on 2026-08-19 -- see the engine note below |
 
 **The corruption itself is unexplained and precisely characterised.** Both bad masters
 carry byte-level damage in the `moov`, in different tables, hours apart, from a process
@@ -137,6 +137,19 @@ Runtime transcription requires a Deepgram API key; the local key is configured a
 `vodpipe doctor` reports `Ready` as of 2026-08-15. A Twitch OAuth token is optional and
 enables the ad-free path.
 
+- **Chat is captured for live and VOD, and feeds the editor report.** Live chat is
+  IRC over TLS (`irc.chat.twitch.tv:6697`), anonymous `justinfan` or the configured
+  OAuth login. VOD chat uses Twitch's persisted GraphQL `VideoCommentsByOffsetOrCursor`
+  (the same comments API TwitchDownloader uses; Client-ID
+  `kd1unb4b3q4t58fwlpcbzcbnm76a8fp`). Offsets are shifted so t=0 is our media start.
+  Per-chunk `source/chat.json` + `moments.json` (laugh emotes, copypasta, clip-calls —
+  not messages/second) go into the report prompt. A chat failure never fails a recording.
+
+- **Recovery probes the lock the recorder actually holds.** A VOD download locks
+  `vod-{id}`, not the broadcaster's channel. Recovery used to probe the channel for
+  both, so a second process could remux and delete a `.ts` the VOD downloader was
+  still writing. `_session_lock_key` is the single source of that identity.
+
 - **VODs reuse the live path.** `Pipeline.download_vod(url)` resolves the broadcaster and
   title with `streamlink --json`, then runs a `Recorder` in `source_kind="vod"` mode:
   `media.vod_download_command()` pipes the VOD to the *same* ffmpeg segmenter as live, so
@@ -173,41 +186,59 @@ Implementation notes worth knowing before changing anything:
   audio only. `+discardcorrupt` covers the other half of the same event
   (`Packet corrupt (stream = 1)` in the same log) — dropping a corrupt packet costs a
   frame, refusing it costs the broadcast.
-- **The rundown engine is pluggable across four transports, and the list lives in
-  `models.PROVIDER_NAMES`.** *2026-08-18, at the user's request after the session-limit
-  failure.* `claude-cli` and `cli` spend a subscription; `anthropic-api` speaks the
-  Messages API; `kimi-api`, `deepseek-api`, `openai-api` and `openai-compatible` are one
-  OpenAI-shaped `/chat/completions` class pointed at different base URLs and keys, because
-  Kimi and DeepSeek both publish OpenAI-compatible APIs and three classes would have been
-  three copies of the same bug surface. Three things are worth knowing before changing any
-  of it:
-  - **`summary.model` is provider-scoped and blank means the provider's default.** That is
-    what makes switching engines a one-field change. A provider with no default (OpenAI,
-    or a compatible endpoint) does not guess: the transport asks the endpoint for its own
-    model list and puts the real ids in the error, because model names move faster than
-    this repository does.
-  - **`cli` is how a ChatGPT or Gemini subscription is used.** Those sell a seat, not an
-    endpoint; their CLIs are the supported way in. The contract is deliberately minimal --
-    the transcript goes on stdin (a two-hour transcript is far past the Windows
-    command-line limit), the rundown is stdout, and a `{system}` token in any argument
-    receives the instruction. Do not grow this into a per-vendor adapter.
-  - **Retiring or renaming a provider needs `schema.RETIRED_PATHS`,** the same as any
-    other key; `summary.provider` is validated as a closed choice built from
-    `PROVIDER_NAMES`, so a name dropped from that tuple stops an installed config from
-    loading.
+- **The rundown engine is `claude -p`, and it is the only one.** *2026-08-19, at the
+  user's request.* For exactly one day this was pluggable across eight names -- added
+  2026-08-18 after `claude -p` hit its session limit mid-recording with nothing to fall
+  back to, removed the next day after the paid APIs failed on the ordinary case twice in
+  one night: Kimi refused one rundown for exceeding an organization concurrency of
+  **one** (against a pipeline whose whole shape is background jobs) and refused the next
+  as `high risk` content, having been handed a Twitch transcript. **A fallback that fails
+  on the ordinary case is not a fallback**, and what the fallback was insuring against
+  costs one rundown that the dashboard can re-queue against the stored transcript once
+  the limit resets. Do not re-add a paid API without reading this paragraph; it is the
+  thing that was tried. Four things the removal had to get right:
+  - **`summary.provider` is a retired *value*, not a retired path,** so `RETIRED_PATHS`
+    does not reach it. An installed `config.json` naming a removed engine is rewritten to
+    `claude-cli` by `schema._summary_provider`/`RETIRED_PROVIDERS` rather than refused --
+    the user's own file said `kimi-api` the day before, and refusing it would be exactly
+    the "will not start on the machine that had it" failure retirement exists to prevent.
+    Rewriting is only safe because the engines were interchangeable: same prompt, same
+    kind of answer. Do not copy this for a setting whose values mean different outcomes.
+  - **`summary.base_url`, `summary.cli_command` and the five API keys are retired keys,**
+    one by one rather than by section -- unlike `edit`. `summary` and `secrets` both
+    still carry live rules, so `_walk` goes on recursing and neither container becomes
+    unknown; retiring the `secrets` section would have taken `deepgram_api_key` with it.
+    Retiring the keys is also what erases the operator's Kimi key from the file.
+  - **`summary.model` now means "leave it blank".** `claude -p` knows which models the
+    subscription covers and this repository does not. It is kept as a setting only
+    because naming one is occasionally useful.
+  - **`PROVIDER_SECRETS` is gone, and with it the idea that capability means a key.**
+    `_summary_capability` is one question again -- is the `claude` executable there --
+    read by the dashboard, recovery, the API and the job, which must not disagree.
+  What survived is the retry below, which is the part that was earning its keep.
+  **`grok-cli` is a second subscription CLI, added later.** Blank `summary.model`
+  means the Grok CLI default, which as of CLI 1.0.5 is **Grok 4.6** (usage id
+  `grok-4.6-build`). The old TUI alias `grok-build` is an unknown model id and is
+  rewritten to blank by `schema.RETIRED_MODELS`. Do not pass `-m grok-build`.
+- **The desktop window is Chromium or Chrome, never Edge.** `find_app_browser`
+  searches a bundled `vendor/chromium`, then Chromium, then Google Chrome.
+  `msedge.exe` is not a candidate. The compiled Windows host is `VODPipeline.exe`
+  (`packaging/host.cs`, built by `vodpipe install`): AppUserModelID
+  `MrBeldum.VODPipeline`, Start Menu shortcut, Apps & Features uninstall key.
+  Closing the Chromium window still shuts the pipeline down.
 - **A rundown engine gets more than one attempt** (`summary.max_retries`, default 3,
-  bounded by `summary.timeout_seconds` overall). *Added 2026-08-16.* The API transport
-  retried and the `claude -p` transport did not, which was backwards: the CLI is the
-  default provider and the one sharing the user's subscription quota, the transient this
-  project has always expected. One blip lost a rundown permanently. A non-zero CLI exit is
+  bounded by `summary.timeout_seconds` overall). *Added 2026-08-16.* An API transport that
+  briefly lived next door retried and the `claude -p` transport did not, which was
+  backwards: the CLI is the only provider and the one sharing the user's subscription
+  quota, the transient this project has always expected. One blip lost a rundown permanently. A non-zero CLI exit is
   not classifiable from outside — a rate limit, a dropped connection and a bad flag look
   identical — so the retry is unconditional and bounded by the deadline the single attempt
   already had. Failure detail now falls back to stdout, because a `--print` CLI writes its
   reason there and the old stderr-only message was a bare `claude -p failed (1):` with
   nothing after the colon.
-- The pipeline is **stdlib-only Python**. Deepgram and the Anthropic API are called over
-  `urllib`; the dashboard is `http.server`. Nothing to pip install, which sidesteps the
-  Python 3.14 wheel gaps flagged below.
+- The pipeline is **stdlib-only Python**. Deepgram is called over
+  `urllib`; the dashboard is `http.server`; the rundown engine is a subprocess. Nothing
+  to pip install, which sidesteps the Python 3.14 wheel gaps flagged below.
 - `h264_amf` was verified working on this machine and is used for proxies, with a
   runtime probe and a `libx264` fallback.
 - No `.epr` proxy ingest preset is generated — Adobe's format is opaque binary. Proxies
@@ -312,6 +343,12 @@ Implementation notes worth knowing before changing anything:
   `snapshot_jobs` is user-initiated. A single FIFO let a 15-minute `claude -p` call block
   rolling transcription for a live channel. Anything reading job state must go through
   `pipeline.job_snapshot()` / `active_jobs()`, never `pipeline.jobs` alone.
+- **Manual refresh is POST `/api/refresh`; the 2s poll is GET `/api/state`.** Refresh
+  queues a forced live probe (the watcher interval is 60s by default, so the dashboard
+  can be stale on "is this channel live?" even while it polls). The poll must stay a
+  cheap read — folding the two together would hammer streamlink every two seconds.
+  F5/Ctrl+R in the Chromium app window are intercepted so they refresh data instead of
+  reloading the page.
 - **The chunk mutation lock is the *transcript generation* lock, and is only ever held
   briefly.** `_summarize_inner` and `retranscribe` are both written
   around that: they do their expensive work unlocked and take the lock only for a
@@ -461,8 +498,8 @@ Implementation notes worth knowing before changing anything:
 | 2 | Video output | **Stream-copy H.264 master + auto-generated proxies** using Adobe's proxy naming convention. |
 | 3 | Early cut | **Non-destructive snapshot** — recording continues untouched. |
 | 4 | Control surface | **Local web dashboard** on localhost. |
-| 5 | Summary style | **Objective rundown only.** No clip recommendations, no editorializing. User was explicit. |
-| 6 | Summary engine | **Pluggable, `claude -p` by default.** Eight engines: the Claude subscription CLI, any other subscription CLI (`cli` -- this is the ChatGPT/Gemini route), the Anthropic API, Kimi, DeepSeek, OpenAI, any OpenAI-compatible endpoint, or off. Added 2026-08-18 after `claude -p` hit its session limit mid-recording and there was nothing to fall back to. |
+| 5 | Summary style | **Editor report.** Written from the angle of an editor cutting Twitch into YouTube (long-form and Shorts): timeline, best moments, skip list, titles. Chat evidence is used for what *landed*, the transcript for what was *said*. The 2026-08-19 "objective rundown only" constraint was withdrawn for this deliverable. |
+| 6 | Summary engine | **`claude -p` (Claude Code) or `grok -p` (Grok 4.6 by default).** Paid HTTP APIs (Anthropic/Kimi/DeepSeek/OpenAI) were added 2026-08-18 and removed 2026-08-19 after they failed on the ordinary case. Do not re-add a paid API; a second subscription CLI is the shape that works. `none` switches reports off. Do not pass `-m grok-build` — the CLI rejects it. |
 | 7 | Channels | **Arbitrary, user-added at runtime. Do not hardcode any channel.** User said "various streamers, don't assume which." |
 | 8 | Storage | Masters → Desktop, kept until manually cleared. Proxies → auto-deleted after 1 day. All adjustable. |
 | 9 | Language | Python for new code. The retired C# predecessor is archived privately at `github.com/MrBeldum/vod-transcript`. |
@@ -582,6 +619,8 @@ These three are exactly what made it too slow, and cloud word timings make all o
 - **The pipeline is file-based** — it writes files Premiere imports. It does not need the
   Premiere or After Effects MCP servers, both of which are currently disabled.
 - **`claude -p` shares the user's subscription usage limits.** A heavy recording day could
-  bump into them, which is why the summarizer must stay pluggable.
+  bump into them. Buying a way around that was tried and withdrawn (see the engine note
+  above); a rundown lost to a limit is re-queued from the dashboard once it resets, and
+  the transcript it is built from was never at risk.
 - Twitch stream codec is usually H.264 but can vary by channel and broadcast; don't assume
   a stream-copy always yields H.264.

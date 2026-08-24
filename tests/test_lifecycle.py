@@ -268,6 +268,23 @@ class RecorderLifecycleTests(unittest.TestCase):
         self.assertEqual(persisted["chunks"][0]["status"], RECORDING)
         self.assertEqual(callbacks, [(session.session_id, "request-token-1234")])
 
+    def test_an_unopened_successor_row_does_not_land_at_offset_zero(self):
+        recorder = self.recorder()
+        with mock.patch("vodpipe.recorder.threading.Thread.start", return_value=None):
+            session = recorder.start()
+        self.addCleanup(recorder._release_lock)
+        first = recorder._open_chunk(0, 0.0)
+        self.store.update_chunk(session, first, duration=7200.0, status="complete")
+        (session.path / "live" / f"{session.channel}_{session.session_id}_c001.ts"
+         ).write_bytes(b"media")
+
+        recorder._handle_segment_row(1, "c001.ts", 7200.0, 7300.0)
+
+        successor = session.chunk(1)
+        self.assertIsNotNone(successor)
+        self.assertAlmostEqual(successor.session_offset, 7200.0)
+        self.assertAlmostEqual(successor.duration, 100.0)
+
     def test_first_media_state_retries_and_callback_failure_is_nonfatal(self):
         callback_calls = []
 

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="VOD Pipeline">
+  <rect width="64" height="64" rx="14" fill="#12141C"/>
+  <rect x="2.5" y="2.5" width="59" height="59" rx="12" fill="none" stroke="#5C5678" stroke-width="2"/>
+  <path d="M24 18.5 L49 32 L24 45.5 Z" fill="#C4B5FD" stroke="#F4F1FF" stroke-width="2.2" stroke-linejoin="round"/>
+  <circle cx="24" cy="24" r="8.2" fill="#E11D2E"/>
+  <circle cx="24" cy="24" r="8.2" fill="none" stroke="#8B1E28" stroke-width="1.6"/>
+</svg>

@@ -25,9 +25,7 @@ APP_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = APP_ROOT / "config.json"
 
 # Keys whose values are masked whenever config is handed to the browser.
-SECRET_KEYS = {"deepgram_api_key", "twitch_oauth_token",
-               "anthropic_api_key", "openai_api_key", "kimi_api_key",
-               "deepseek_api_key", "openai_compatible_api_key"}
+SECRET_KEYS = {"deepgram_api_key", "twitch_oauth_token"}
 
 # Sentinels the dashboard round-trips for secret fields.
 MASK = "__unchanged__"      # keep whatever is stored
@@ -151,35 +149,32 @@ DEFAULTS: dict[str, Any] = {
     },
     "summary": {
         "enabled": True,
-        # claude-cli | cli | anthropic-api | kimi-api | deepseek-api |
-        # openai-api | openai-compatible | none. See models.PROVIDER_NAMES,
-        # which is where the list actually lives.
+        # claude-cli | grok-cli | none. See models.PROVIDER_NAMES.
+        # Both engines are local subscription CLIs (`claude -p` / `grok -p`).
+        # The paid-API engines were removed 2026-08-19; the reason is in
+        # models.py and it is worth reading before adding another.
         "provider": "claude-cli",
-        # Provider-scoped: the model for whichever engine is selected. Blank
-        # means that engine's own default (kimi-k3, deepseek-v4-pro,
-        # claude-sonnet-5 ...), which is what makes switching engines a
-        # one-field change. A provider with no default reports the model list
-        # its endpoint actually offers rather than guessing.
+        # Passed through as `--model`. Blank means the engine's default:
+        # claude -p picks from the subscription; grok -p uses its CLI default
+        # (Grok 4.6 as of CLI 1.0.5). `grok-build` is a retired value.
         "model": "",
-        # Only for `openai-compatible`: the root of an OpenAI-shaped API, e.g.
-        # "https://openrouter.ai/api/v1" or "http://127.0.0.1:11434/v1". The
-        # named providers carry their own.
-        "base_url": "",
-        # Only for `cli`: the command that runs a subscription CLI. The
-        # transcript always goes to it on stdin; a token containing {system}
-        # receives the instruction, and if none does it is prepended to stdin.
-        # e.g. ["codex", "exec", "--sandbox", "read-only", "-"]
-        "cli_command": [],
         "timeout_seconds": 900,
-        "max_tokens": 8000,
-        # Attempts per rundown, shared by both engines and bounded by
-        # timeout_seconds overall. A rundown is background work whose engine can
-        # rate-limit -- `claude -p` shares the user's subscription quota -- so a
-        # single transient refusal must not be the end of it.
+        # Attempts per report, bounded by timeout_seconds overall. A report is
+        # background work whose engine can rate-limit -- both CLIs share the
+        # user's subscription quota -- so a single transient refusal must not be
+        # the end of it.
         "max_retries": 3,
-        # Below this many words there is nothing to write a rundown about.
+        # Below this many words there is nothing to write a report about.
         "min_words": 25,
-        # Objective rundown only. Settled decision #5 -- not a tuneable.
+        "max_tokens": 8000,
+    },
+    "chat": {
+        # Download Twitch chat for live broadcasts (IRC) and VODs (GraphQL,
+        # the same comments API TwitchDownloader uses). Feeds the report's
+        # moment analysis. A chat failure never fails a recording.
+        "enabled": True,
+        "vod_threads": 4,
+        "timeout_seconds": 300,
     },
     "ads": {
         # Ad events are recorded as operational metadata ONLY. They are never
@@ -234,20 +229,13 @@ DEFAULTS: dict[str, Any] = {
     "secrets": {
         "deepgram_api_key": "",
         "twitch_oauth_token": "",
-        # One per rundown engine. Separate keys rather than a single
-        # "summary key" so switching engines does not mean re-pasting the one
-        # you were using before, and so `doctor` can say which is missing.
-        "anthropic_api_key": "",
-        "openai_api_key": "",
-        "kimi_api_key": "",
-        "deepseek_api_key": "",
-        "openai_compatible_api_key": "",
     },
     "tools": {
         "ffmpeg": "",
         "ffprobe": "",
         "streamlink": "",
         "claude": "",
+        "grok": "",
     },
 }
 

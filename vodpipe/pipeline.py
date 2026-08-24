@@ -19,6 +19,22 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
 from .channels import InvalidVod, parse_channel, parse_vod, vod_dir_name
+from .chat import (
+    CHAT_JSON,
+    ChatError,
+    ChatMessage,
+    LiveChatCapture,
+    download_vod_chat_range,
+    live_jsonl_path,
+    load_jsonl,
+    load_messages,
+    session_chat_dir,
+    slice_messages,
+    vod_json_path,
+    write_chat_exports,
+    _oauth_login,
+)
+from .moments import analyse_chat, render_moments, write_moments
 from .config import Config
 from .disk import DiskBudget, DiskReservation
 from .exports import (
@@ -57,7 +73,6 @@ from .media import (
     verify_master_readable,
     video_dimensions,
 )
-from .models import PROVIDER_SECRETS
 from .recorder import Recorder
 from .snapshot import (
     SnapshotRequest,
@@ -76,6 +91,7 @@ from .state import (
     REMUXING,
     RUNNING,
     SKIPPED,
+    SOURCE_LIVE,
     SOURCE_VOD,
     STARTING,
     Chunk,
@@ -84,10 +100,16 @@ from .state import (
     SessionStore,
 )
 from .summarize import (
+    LEGACY_REPORT_NAME,
+    REPORT_NAME,
     build_header,
     build_model_input,
+    build_report_user,
     build_summarizer,
+    report_generation,
+    retire_report,
     rundown_generation,
+    write_report,
     write_rundown,
 )
 from .transcribe import SHORT_READ_TOLERANCE, RollingTranscriber
@@ -349,6 +371,12 @@ class Pipeline:
         self._threads: list[threading.Thread] = []
         self._live_status: dict[str, dict[str, Any]] = {}
         self._last_retention_sweep = 0.0
+        # Live IRC listeners, keyed by session id. Stopped when the session ends.
+        self._chat_captures: dict[str, LiveChatCapture] = {}
+        self._chat_guard = threading.Lock()
+        # VOD GraphQL downloads in flight: session_id -> Event set when finished.
+        self._vod_chat_ready: dict[str, threading.Event] = {}
+        self._vod_chat_error: dict[str, str] = {}
         # Serialises start/stop/shutdown against each other. Without it two
         # requests, or a request racing the watcher, could both pass the
         # "already recording?" check and launch duplicate recorders.
@@ -718,13 +746,14 @@ class Pipeline:
             # whole life. Never adopt (and so never delete) media for a channel
             # something else is recording -- the quarantined manifest may belong to
             # a capture that is still running.
-            if not self._channel_free(channel):
+            directory = original.parent
+            lock_key = self._lock_key_from_quarantine(directory, channel)
+            if not self._channel_free(lock_key):
                 actions.append(
-                    f"{session_id}: left alone, {channel} is being recorded by "
+                    f"{session_id}: left alone, {lock_key} is being recorded by "
                     "another process")
                 continue
 
-            directory = original.parent
             live = directory / "live"
             master = directory / "master"
             media: list[Path] = []
@@ -882,6 +911,44 @@ class Pipeline:
             actions.append(f"{session.session_id}: recomputed chunk timeline")
         return actions
 
+    def _session_lock_key(self, session: Session) -> str:
+        """The cross-process lock the recorder for this session actually holds.
+
+        Live recordings lock the channel. VOD downloads lock `vod-{id}` so they
+        can run beside a live recording of the same broadcaster. Recovery used
+        to probe the channel for both, which meant a VOD `.ts` still being
+        written was treated as ownerless and remuxed out from under the
+        downloader.
+        """
+        if session.source_kind == SOURCE_VOD:
+            try:
+                video_id, _ = parse_vod(session.source_url or "")
+            except InvalidVod:
+                video_id = ""
+            if video_id and video_id != "0":
+                return f"vod-{video_id}"
+        return session.channel
+
+    def _lock_key_from_quarantine(self, directory: Path, channel: str) -> str:
+        """Best-effort recorder lock for a quarantined session directory."""
+        for candidate in directory.glob("session.invalid-*.json"):
+            try:
+                data = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            if data.get("source_kind") != SOURCE_VOD:
+                return channel
+            try:
+                video_id, _ = parse_vod(str(data.get("source_url") or ""))
+            except InvalidVod:
+                return channel
+            if video_id and video_id != "0":
+                return f"vod-{video_id}"
+            return channel
+        return channel
+
     def _owns(self, session: Session) -> bool:
         """Is this `recording` session really ownerless, and so ours to recover?
 
@@ -891,15 +958,16 @@ class Pipeline:
         the first is how a recording gets remuxed and its `.ts` deleted out from
         under the process still writing it.
 
-        The channel lock is the only thing that can tell them apart. Recovery
+        The recorder's lock is the only thing that can tell them apart. Recovery
         runs before this process starts any recorder, so a lock we can take is by
         definition nobody's. The lock is released again immediately: what follows
         works on a session whose recorder is provably gone, and any new recording
         on this channel claims its own session id and its own files.
         """
-        if not self._channel_free(session.channel):
+        key = self._session_lock_key(session)
+        if not self._channel_free(key):
             LOG.info("%s is being recorded by another process; leaving %s alone",
-                     session.channel, session.session_id)
+                     key, session.session_id)
             return False
         return True
 
@@ -1186,10 +1254,11 @@ class Pipeline:
                 actions.append("re-queued transcript")
             return actions
 
+        needs_chat = self._recover_chat_state(session, chunk)
         needs_summary = self._recover_summary_state(
             session, chunk, complete=True)
         seam = self._seam_recovery_needed(session, chunk)
-        if seam or needs_summary:
+        if seam or needs_summary or needs_chat:
             key = f"recover-post:{session.session_id}:{chunk.label}"
             job = ownership.submit(
                 self.jobs, key,
@@ -1202,8 +1271,10 @@ class Pipeline:
                 names = []
                 if seam:
                     names.append("seam")
+                if needs_chat:
+                    names.append("chat")
                 if needs_summary:
-                    names.append("rundown")
+                    names.append("report")
                 actions.append("re-queued " + ", ".join(names))
         return actions
 
@@ -1263,16 +1334,36 @@ class Pipeline:
             raise RuntimeError(
                 result.detail or "transcript recovery did not complete")
         self._stitch_boundary(session, chunk, already_owned=(chunk,))
-        if self._recover_summary_state(session, chunk, complete=True):
-            self._queue_summary(session, chunk, ownership=ownership)
+        if self._recover_chat_state(session, chunk):
+            self._queue_chat(session, chunk)
+        elif self._recover_summary_state(session, chunk, complete=True):
+            self._maybe_queue_summary(session, chunk, ownership=ownership)
         job.progress = ""
 
     def _recover_post_transcript(self, session: Session, chunk: Chunk,
                                  ownership: _OwnershipGroup,
                                  needs_summary: bool) -> None:
         self._stitch_boundary(session, chunk, already_owned=(chunk,))
-        if needs_summary:
-            self._queue_summary(session, chunk, ownership=ownership)
+        if self._recover_chat_state(session, chunk):
+            self._queue_chat(session, chunk)
+        elif needs_summary:
+            self._maybe_queue_summary(session, chunk, ownership=ownership)
+
+    def _recover_chat_state(self, session: Session, chunk: Chunk) -> bool:
+        """True if a chat job still needs to run for this chunk."""
+        if not self._chat_enabled():
+            if chunk.chat_status != SKIPPED:
+                self.store.update_chunk(session, chunk, chat_status=SKIPPED,
+                                        chat_error="")
+            return False
+        path = (self.transcriber.output_dir(session, chunk)
+                / SOURCE_DIR / CHAT_JSON)
+        if path.is_file():
+            if chunk.chat_status != DONE:
+                self.store.update_chunk(session, chunk, chat_status=DONE,
+                                        chat_error="")
+            return False
+        return chunk.chat_status not in (DONE, SKIPPED)
 
     def _summary_enabled(self) -> bool:
         return bool(self.config.get("summary.enabled", True)) and str(
@@ -1281,32 +1372,22 @@ class Pipeline:
     def _summary_capability(self) -> tuple[bool, str]:
         """Can the configured engine be asked at all? One answer, five callers.
 
-        Driven by `models.PROVIDER_SECRETS` rather than a chain of provider
-        names, so adding an engine does not mean remembering to teach this
-        function about it -- the dashboard, recovery, the API and the job all
-        read their verdict from here.
+        There is one engine now, so this is one question -- but it stays a
+        single function because the dashboard, recovery, the API and the job all
+        read their verdict from here, and they must not be able to disagree.
         """
         if not self._summary_enabled():
-            return False, "rundowns are disabled"
+            return False, "reports are disabled"
         provider = str(self.config.get("summary.provider") or "claude-cli").lower()
-        secret = PROVIDER_SECRETS.get(provider)
-        if secret:
-            if self.config.secret(secret):
+        if provider == "claude-cli":
+            if self.tools.claude:
                 return True, ""
-            return False, (f"no API key is configured for {provider} "
-                           f"(secrets.{secret})")
-        if provider == "cli":
-            if self._summary_cli_command():
+            return False, "the claude executable is unavailable"
+        if provider == "grok-cli":
+            if self.tools.grok:
                 return True, ""
-            return False, ("summary.cli_command is not set, so there is no "
-                           "command to run")
-        if self.tools.claude:
-            return True, ""
-        return False, "the claude executable is unavailable"
-
-    def _summary_cli_command(self) -> list[str]:
-        return [str(part) for part in (self.config.get("summary.cli_command") or [])
-                if str(part).strip()]
+            return False, "the grok executable is unavailable"
+        return False, f"unknown report engine {provider}"
 
     def _summary_source(self, session: Session,
                         chunk: Chunk) -> tuple[_SummarySource | None, str]:
@@ -1387,7 +1468,7 @@ class Pipeline:
             elif source is None:
                 self.store.update_chunk(
                     session, chunk, summary_status=SKIPPED,
-                    summary_error=f"no rundown: {reason}")
+                    summary_error=f"no report: {reason}")
             elif queue:
                 self._queue_summary(session, chunk)
             else:
@@ -1399,10 +1480,11 @@ class Pipeline:
 
     def _retire_obsolete_rundown(self, session: Session, chunk: Chunk,
                                  generation: str, why: str) -> None:
-        rundown = self.transcriber.output_dir(session, chunk) / "rundown.md"
-        if rundown.is_file() and rundown_generation(rundown) != generation:
+        directory = self.transcriber.output_dir(session, chunk)
+        current = report_generation(directory)
+        if current is not None and current != generation:
             try:
-                self._retire_rundown(rundown, why)
+                self._retire_rundown(directory, why)
             finally:
                 self._refresh_session_index(session)
 
@@ -1410,14 +1492,14 @@ class Pipeline:
                                   exc: Exception) -> None:
         self.store.update_chunk(
             session, chunk, summary_status=ERROR,
-            summary_error=f"could not remove obsolete rundown: {exc}")
+            summary_error=f"could not remove obsolete report: {exc}")
         self._refresh_session_index(session)
-        LOG.error("%s/%s: could not retire obsolete rundown: %s",
+        LOG.error("%s/%s: could not retire obsolete report: %s",
                   session.channel, chunk.label, exc)
 
     def _recover_summary_state(self, session: Session, chunk: Chunk, *,
                                complete: bool) -> bool:
-        rundown = self.transcriber.output_dir(session, chunk) / "rundown.md"
+        directory = self.transcriber.output_dir(session, chunk)
         if not self._summary_enabled():
             # A configuration switch is not a deletion request. Generation
             # changes retire stale files at the transcript publication boundary.
@@ -1431,19 +1513,20 @@ class Pipeline:
             source, reason = None, "the transcript is incomplete or unavailable"
         if source is None:
             try:
-                self._retire_rundown(rundown, reason)
+                self._retire_rundown(directory, reason)
             except Exception as exc:
                 self._summary_retirement_error(session, chunk, exc)
                 return False
             self.store.update_chunk(
                 session, chunk, summary_status=SKIPPED,
-                summary_error=f"no rundown: {reason}")
+                summary_error=f"no report: {reason}")
             self._refresh_session_index(session)
             return False
 
-        if rundown.is_file():
+        if (directory / REPORT_NAME).is_file() or (
+                directory / LEGACY_REPORT_NAME).is_file():
             try:
-                generation = rundown_generation(rundown)
+                generation = report_generation(directory)
             except Exception as exc:
                 self._summary_retirement_error(session, chunk, exc)
                 return False
@@ -1454,7 +1537,7 @@ class Pipeline:
                 return False
             try:
                 self._retire_rundown(
-                    rundown, "it belongs to an older transcript generation")
+                    directory, "it belongs to an older transcript generation")
             except Exception as exc:
                 self._summary_retirement_error(session, chunk, exc)
                 return False
@@ -1604,6 +1687,15 @@ class Pipeline:
         # visible as draining, but its post-probe lifecycle check sees `_stop` and
         # cannot launch capture behind shutdown.
         self.probe_jobs.stop(timeout=job_timeout)
+
+        with self._chat_guard:
+            captures = list(self._chat_captures.values())
+            self._chat_captures.clear()
+        for capture in captures:
+            try:
+                capture.stop(timeout=2.0)
+            except Exception:
+                LOG.exception("chat listener did not stop cleanly")
 
         recorders = list(self._recorders.values()) + list(
             self._vod_recorders.values())
@@ -1938,6 +2030,7 @@ class Pipeline:
                 raise
 
         LOG.info("recording %s -> %s", channel, session.directory)
+        self._start_live_chat(session)
         return session
 
     def request_recording(self, channel: str) -> dict[str, Any]:
@@ -2229,6 +2322,7 @@ class Pipeline:
 
         LOG.info("downloading VOD %s (%s) -> %s",
                  video_id, channel, session.directory)
+        self._start_vod_chat(session, video_id)
         return session
 
     def stop_vod(self, session_id: str) -> None:
@@ -2336,10 +2430,14 @@ class Pipeline:
                     chunk_lock_path(session.path, chunk.label),
                     timeout=30.0).acquire()
             except ResourceBusy:
-                self._externally_owned_sessions.add(session.session_id)
-                LOG.info("%s/%s finalisation is owned by another process",
-                         session.channel, chunk.label)
-                return
+                # A busy mutation lock is a transient overlap (retranscribe,
+                # recovery, a peer handle on Windows), not proof another
+                # pipeline owns the session. Returning here used to mark the
+                # finalize job DONE without remuxing, and the ticker never
+                # resubmitted it. Fail the job so recovery can try again.
+                raise RuntimeError(
+                    f"{session.channel}/{chunk.label} is being mutated; "
+                    "finalisation will retry")
             ownership = self._ownership(lock)
             try:
                 self._finalize_chunk(
@@ -2365,6 +2463,7 @@ class Pipeline:
                 request, "complete", session_id=session.session_id)
 
     def _on_session_ended(self, session: Session, request_id: str = "") -> None:
+        self._stop_session_chat(session)
         LOG.info("%s: session ended with %d chunk(s)",
                  session.channel, len(session.chunks))
         self._refresh_session_index(session)
@@ -2400,6 +2499,7 @@ class Pipeline:
     def _on_vod_session_ended(self, session: Session) -> None:
         """A VOD download finished. No arming or watcher state to reconcile -- a
         VOD is a one-shot, not a channel the pipeline keeps trying to record."""
+        self._stop_session_chat(session)
         LOG.info("VOD %s: download ended with %d chunk(s)",
                  session.channel, len(session.chunks))
         self._refresh_session_index(session)
@@ -2442,20 +2542,23 @@ class Pipeline:
         job.progress = "queueing proxy"
         self._queue_proxy(session, chunk, ownership=ownership)
 
-        job.progress = "queueing rundown"
+        job.progress = "queueing chat"
+        self._queue_chat(session, chunk)
+
+        job.progress = "queueing report"
         # AUD2-011: only summarise a transcript that actually finished. The
-        # rundown header states the chunk's full duration, so summarising a
+        # report header states the chunk's full duration, so summarising a
         # transcript that covers only its first ten minutes produces a document
         # that is wrong rather than partial -- and nothing downstream marks it as
-        # such. If the catch-up was blocked, the rundown waits for a rebuild.
+        # such. If the catch-up was blocked, the report waits for a rebuild.
         if transcript.complete:
-            self._queue_summary(session, chunk, ownership=ownership)
+            self._maybe_queue_summary(session, chunk, ownership=ownership)
         else:
             self.store.update_chunk(
                 session, chunk, summary_status=SKIPPED,
-                summary_error=f"no rundown: "
+                summary_error=f"no report: "
                               f"{transcript.detail or 'the transcript is incomplete'}")
-            LOG.warning("%s/%s: skipping the rundown -- its transcript is "
+            LOG.warning("%s/%s: skipping the report -- its transcript is "
                         "incomplete", session.channel, chunk.label)
 
         self._refresh_session_index(session)
@@ -2692,14 +2795,56 @@ class Pipeline:
         self._refresh_session_index(session)
         return job
 
+    def _chat_enabled(self) -> bool:
+        return bool(self.config.get("chat.enabled", True))
+
+    def _maybe_queue_summary(self, session: Session, chunk: Chunk, *,
+                             ownership: _OwnershipGroup | None = None
+                             ) -> Job | None:
+        """Queue the report only once the transcript is complete *and* chat
+        has reached a terminal state (or is switched off).
+
+        Chat is evidence, not a dependency of the recording. We still wait for
+        it so the report is written once, with the audience in it, rather than
+        once from the transcript and again when comments land.
+        """
+        if self._chat_enabled() and chunk.chat_status in (PENDING, RUNNING):
+            return None
+        return self._queue_summary(session, chunk, ownership=ownership)
+
+    def _queue_chat(self, session: Session, chunk: Chunk) -> Job | None:
+        if not self._chat_enabled():
+            self.store.update_chunk(session, chunk, chat_status=SKIPPED,
+                                    chat_error="")
+            self._refresh_session_index(session)
+            self._maybe_queue_summary(session, chunk)
+            return None
+        key = f"chat:{session.session_id}:{chunk.label}"
+        job = self.media_jobs.submit(
+            key,
+            f"{session.channel} {chunk.label}: chat",
+            "chat",
+            lambda item: self._capture_chunk_chat(item, session, chunk),
+        )
+        if job is None and not self._job_active(self.media_jobs, key):
+            self.store.update_chunk(
+                session, chunk, chat_status=ERROR,
+                chat_error="chat could not be queued")
+            self._maybe_queue_summary(session, chunk)
+        elif job is not None:
+            self.store.update_chunk(session, chunk, chat_status=PENDING,
+                                    chat_error="")
+        self._refresh_session_index(session)
+        return job
+
     def _queue_summary(self, session: Session, chunk: Chunk, *,
                        ownership: _OwnershipGroup | None = None) -> Job | None:
-        """Rundowns run off the critical path.
+        """Reports run off the critical path.
 
-        A `claude -p` call can take a quarter of an hour. Running it inline in
-        chunk finalisation held one of three capture-critical workers for that
-        whole time, and rolling transcription for a live channel queued up behind
-        it.
+        A `claude -p` / `grok -p` call can take a quarter of an hour. Running it
+        inline in chunk finalisation held one of three capture-critical workers
+        for that whole time, and rolling transcription for a live channel queued
+        up behind it.
         """
         if not self._summary_enabled():
             self.store.update_chunk(session, chunk, summary_status=SKIPPED,
@@ -2708,16 +2853,16 @@ class Pipeline:
             return None
 
         source, reason = self._summary_source(session, chunk)
-        rundown = self.transcriber.output_dir(session, chunk) / "rundown.md"
+        output = self.transcriber.output_dir(session, chunk)
         if source is None:
             try:
-                self._retire_rundown(rundown, reason)
+                self._retire_rundown(output, reason)
             except Exception as exc:
                 self._summary_retirement_error(session, chunk, exc)
                 return None
             self.store.update_chunk(
                 session, chunk, summary_status=SKIPPED,
-                summary_error=f"no rundown: {reason}")
+                summary_error=f"no report: {reason}")
             self._refresh_session_index(session)
             return None
         try:
@@ -2730,12 +2875,12 @@ class Pipeline:
 
         # The provider call intentionally owns no transcript lock. It can run for
         # minutes; retranscription must be able to replace the source meanwhile.
-        # Only the final generation recheck and rundown commit are locked.
+        # Only the final generation recheck and report commit are locked.
         key = (f"summary:{session.session_id}:{chunk.label}:"
                f"{source.generation}")
         job = self.media_jobs.submit(
             key,
-            f"{session.channel} {chunk.label}: rundown",
+            f"{session.channel} {chunk.label}: report",
             "summary",
             lambda item: self._summarize(
                 session, chunk, source.generation),
@@ -2743,7 +2888,7 @@ class Pipeline:
         if job is None and not self._job_active(self.media_jobs, key):
             self.store.update_chunk(
                 session, chunk, summary_status=ERROR,
-                summary_error="rundown could not be queued")
+                summary_error="report could not be queued")
         elif job is not None:
             self.store.update_chunk(session, chunk, summary_status=PENDING,
                                     summary_error="")
@@ -2904,7 +3049,8 @@ class Pipeline:
                 mutation = ResourceLock(
                     chunk_lock_path(session.path, chunk.label)).acquire()
             except ResourceBusy:
-                self._externally_owned_sessions.add(session.session_id)
+                # Do not poison the whole session: a brief overlap with
+                # retranscribe or stitch must not freeze rolling ASR until restart.
                 return AdvanceResult(BLOCKED, detail="chunk is owned externally")
             try:
                 try:
@@ -3005,14 +3151,13 @@ class Pipeline:
                 # Direct callers still go through the same eligibility contract.
                 try:
                     self._retire_rundown(
-                        self.transcriber.output_dir(session, chunk) / "rundown.md",
-                        reason)
+                        self.transcriber.output_dir(session, chunk), reason)
                 except Exception as exc:
                     self._summary_retirement_error(session, chunk, exc)
                     raise
                 self.store.update_chunk(
                     session, chunk, summary_status=SKIPPED,
-                    summary_error=f"no rundown: {reason}")
+                    summary_error=f"no report: {reason}")
                 self._refresh_session_index(session)
                 return
             generation = source.generation
@@ -3021,10 +3166,10 @@ class Pipeline:
         except Exception as exc:
             current, _ = self._summary_source(session, chunk)
             if current is None or current.generation != generation:
-                LOG.info("%s/%s: ignoring failure from stale rundown generation %s",
+                LOG.info("%s/%s: ignoring failure from stale report generation %s",
                          session.channel, chunk.label, generation)
                 return
-            LOG.error("%s/%s: rundown failed: %s",
+            LOG.error("%s/%s: report failed: %s",
                       session.channel, chunk.label, exc)
             self.store.update_chunk(session, chunk, summary_status=ERROR,
                                     summary_error=str(exc))
@@ -3034,11 +3179,11 @@ class Pipeline:
 
     def _summarize_inner(self, session: Session, chunk: Chunk,
                          generation: str) -> None:
-        rundown = self.transcriber.output_dir(session, chunk) / "rundown.md"
+        directory = self.transcriber.output_dir(session, chunk)
 
-        # "none" is how a user turns rundowns off; treating it as a failure
+        # "none" is how a user turns reports off; treating it as a failure
         # produced an error on every chunk for a working configuration. An
-        # existing rundown is deliberately left alone here: turning the feature
+        # existing report is deliberately left alone here: turning the feature
         # off is not a request to delete work already done.
         if (not self.config.get("summary.enabled", True)
                 or (self.config.get("summary.provider") or "").lower() == "none"):
@@ -3049,17 +3194,17 @@ class Pipeline:
         source, reason = self._summary_source(session, chunk)
         if source is None:
             # AUD2-052: the transcript is no longer eligible (retranscribed to
-            # empty, or gone). Reach a terminal state and retire any stale rundown
+            # empty, or gone). Reach a terminal state and retire any stale report
             # rather than returning silently and leaving the chunk stuck at
             # pending/running forever. This is "nothing to summarise", not a fault,
             # so it is SKIPPED with a reason -- consistent with the direct path.
             try:
-                self._retire_rundown(rundown, reason)
+                self._retire_rundown(directory, reason)
             except Exception as exc:
                 self._summary_retirement_error(session, chunk, exc)
                 raise
             self.store.update_chunk(session, chunk, summary_status=SKIPPED,
-                                    summary_error=f"no rundown: {reason}")
+                                    summary_error=f"no report: {reason}")
             return
         if source.generation != generation:
             # A newer transcript generation exists; its own summary job owns it.
@@ -3071,11 +3216,13 @@ class Pipeline:
         self.store.update_chunk(session, chunk, summary_status=RUNNING)
         header = build_header(session.channel, session.session_id, chunk.label,
                               chunk.session_offset, chunk.duration, session.started_at)
-        summarizer = build_summarizer(self.config, self.tools.claude)
-        summary_text = summarizer.summarize(source.body, header)
+        user = self._report_user_prompt(session, chunk, source.body)
+        summarizer = build_summarizer(
+            self.config, self.tools.claude, self.tools.grok)
+        summary_text = summarizer.summarize(user, header)
 
         # Recheck under the same short mutation lock as the commit. A replacement
-        # cannot land between this check and the atomic rundown write.
+        # cannot land between this check and the atomic report write.
         with self._chunk_lock(session, chunk):
             mutation = ResourceLock(
                 chunk_lock_path(session.path, chunk.label), timeout=60.0).acquire()
@@ -3088,18 +3235,240 @@ class Pipeline:
                         session, chunk, summary_status=SKIPPED,
                         summary_error="")
                     return
-                write_rundown(rundown, summary_text, header, generation)
+                write_report(directory, summary_text, header, generation)
                 self.store.update_chunk(session, chunk, summary_status=DONE,
                                         summary_error="")
             finally:
                 mutation.release()
 
     def _retire_rundown(self, rundown: Path, why: str) -> None:
-        """Remove a rundown that no longer describes the transcript beside it."""
-        if not rundown.exists():
+        """Remove a report that no longer describes the transcript beside it.
+
+        Accepts a chunk directory or a legacy file path (`rundown.md` /
+        `report.md`); both names are deleted so a rename cannot leave two
+        answers in the folder.
+        """
+        directory = rundown if rundown.is_dir() else rundown.parent
+        retire_report(directory, why)
+
+    def _report_user_prompt(self, session: Session, chunk: Chunk,
+                            transcript: str) -> str:
+        messages: list[ChatMessage] = []
+        chat_notes = ""
+        count: int | None = None
+        source_dir = self.transcriber.output_dir(session, chunk) / SOURCE_DIR
+        chat_file = source_dir / CHAT_JSON
+        try:
+            messages = load_messages(chat_file)
+            count = len(messages)
+        except ChatError as exc:
+            chat_notes = f"Chat file was unreadable ({exc})."
+        except Exception:
+            messages = []
+        moments_block = ""
+        if messages:
+            moments = analyse_chat(
+                messages, duration=max(chunk.duration, 1.0),
+                session_offset=chunk.session_offset)
+            moments_block = render_moments(moments)
+        elif count == 0:
+            chat_notes = chat_notes or "Chat was captured and contained no messages."
+        elif chunk.chat_status == ERROR and chunk.chat_error:
+            chat_notes = f"Chat capture failed: {chunk.chat_error}"
+        elif chunk.chat_status == SKIPPED:
+            chat_notes = "Chat capture is switched off."
+        return build_report_user(
+            transcript, chat_notes=chat_notes, moments_block=moments_block,
+            message_count=count)
+
+    def _start_live_chat(self, session: Session) -> None:
+        if not self._chat_enabled() or session.source_kind != SOURCE_LIVE:
             return
-        rundown.unlink()
-        LOG.info("removed %s: %s", rundown, why)
+        destination = live_jsonl_path(session.path)
+        token = self.config.secret("twitch_oauth_token") or ""
+        proxy = str(self.config.get("network.proxy") or "")
+        login = ""
+        if token:
+            try:
+                login = _oauth_login(token, proxy, timeout=15.0)
+            except Exception:
+                login = ""
+        capture = LiveChatCapture(
+            session.channel, destination, origin=session.started_at,
+            oauth_token=token, proxy=proxy, login=login,
+        )
+        with self._chat_guard:
+            previous = self._chat_captures.pop(session.session_id, None)
+            self._chat_captures[session.session_id] = capture
+        if previous is not None:
+            previous.stop(timeout=2.0)
+        try:
+            capture.start()
+        except Exception as exc:
+            LOG.warning("%s: live chat did not start: %s", session.channel, exc)
+
+    def _start_vod_chat(self, session: Session, video_id: str) -> None:
+        if not self._chat_enabled():
+            return
+        ready = threading.Event()
+        with self._chat_guard:
+            self._vod_chat_ready[session.session_id] = ready
+            self._vod_chat_error.pop(session.session_id, None)
+        key = f"chat-vod:{session.session_id}"
+        job = self.media_jobs.submit(
+            key,
+            f"{session.channel}: VOD chat",
+            "chat",
+            lambda item: self._download_vod_chat_job(
+                item, session, video_id, ready),
+        )
+        if job is None:
+            with self._chat_guard:
+                self._vod_chat_error[session.session_id] = (
+                    "VOD chat could not be queued")
+            ready.set()
+
+    def _download_vod_chat_job(self, job: Job, session: Session,
+                               video_id: str, ready: threading.Event) -> None:
+        job.progress = "downloading VOD chat"
+        try:
+            messages = download_vod_chat_range(
+                video_id,
+                vod_start=self._vod_start_for(session),
+                vod_duration=self._vod_duration_for(session),
+                proxy=str(self.config.get("network.proxy") or ""),
+                oauth_token=self.config.secret("twitch_oauth_token") or "",
+                threads=int(self.config.get("chat.vod_threads", 4)),
+                timeout=float(self.config.get("chat.timeout_seconds", 300)),
+            )
+            path = vod_json_path(session.path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            write_chat_exports(
+                path.parent, messages,
+                channel=session.channel, session_id=session.session_id,
+                chunk="session", session_offset=0.0,
+                duration=max((item.offset for item in messages), default=0.0),
+                source="vod",
+            )
+            # write_chat_exports names chat.json; also keep vod.json as the
+            # session-level handle recovery reads.
+            import shutil
+            chat_json = path.parent / CHAT_JSON
+            if chat_json != path and chat_json.is_file():
+                shutil.copyfile(chat_json, path)
+            LOG.info("%s: downloaded %d VOD chat messages",
+                     session.channel, len(messages))
+        except Exception as exc:
+            with self._chat_guard:
+                self._vod_chat_error[session.session_id] = str(exc)
+            LOG.warning("%s: VOD chat download failed: %s", session.channel, exc)
+        finally:
+            ready.set()
+
+    def _vod_start_for(self, session: Session) -> float | None:
+        recorder = self._active_recorder_for(session)
+        if recorder is not None:
+            return recorder.vod_start
+        return None
+
+    def _vod_duration_for(self, session: Session) -> float | None:
+        recorder = self._active_recorder_for(session)
+        if recorder is not None:
+            return recorder.vod_duration
+        return None
+
+    def _stop_session_chat(self, session: Session) -> None:
+        with self._chat_guard:
+            capture = self._chat_captures.pop(session.session_id, None)
+        if capture is not None:
+            capture.stop(timeout=5.0)
+
+    def _capture_chunk_chat(self, job: Job, session: Session,
+                            chunk: Chunk) -> None:
+        try:
+            self.store.update_chunk(session, chunk, chat_status=RUNNING,
+                                    chat_error="")
+            messages = self._messages_for_chunk(session, chunk)
+            messages = [
+                replace(item, offset=max(0.0, item.offset - chunk.session_offset))
+                for item in messages
+            ]
+            output = self.transcriber.output_dir(session, chunk) / SOURCE_DIR
+            source = "vod" if session.source_kind == SOURCE_VOD else "irc"
+            write_chat_exports(
+                output, messages,
+                channel=session.channel, session_id=session.session_id,
+                chunk=chunk.label, session_offset=chunk.session_offset,
+                duration=chunk.duration, source=source,
+            )
+            moments = analyse_chat(
+                messages, duration=max(chunk.duration, 1.0),
+                session_offset=chunk.session_offset)
+            write_moments(
+                output / "moments.json", moments,
+                channel=session.channel, chunk=chunk.label,
+                duration=chunk.duration)
+            self.store.update_chunk(session, chunk, chat_status=DONE,
+                                    chat_error="")
+            LOG.info("%s/%s: chat ready (%d messages, %d moments)",
+                     session.channel, chunk.label, len(messages), len(moments))
+        except Exception as exc:
+            self.store.update_chunk(session, chunk, chat_status=ERROR,
+                                    chat_error=str(exc))
+            LOG.warning("%s/%s: chat failed: %s",
+                        session.channel, chunk.label, exc)
+        finally:
+            self._refresh_session_index(session)
+            self._maybe_queue_summary(session, chunk)
+
+    def _messages_for_chunk(self, session: Session,
+                            chunk: Chunk) -> list[ChatMessage]:
+        start = chunk.session_offset
+        end = chunk.session_offset + max(chunk.duration, 0.0)
+        if session.source_kind == SOURCE_VOD:
+            return self._vod_messages_for_chunk(session, start, end)
+        with self._chat_guard:
+            capture = self._chat_captures.get(session.session_id)
+        if capture is not None:
+            # Offsets on the live capture are session-relative already.
+            return capture.in_range(start, end)
+        path = live_jsonl_path(session.path)
+        try:
+            return slice_messages(load_jsonl(path), start, end)
+        except ChatError:
+            return []
+
+    def _vod_messages_for_chunk(self, session: Session, start: float,
+                                end: float) -> list[ChatMessage]:
+        ready = None
+        with self._chat_guard:
+            ready = self._vod_chat_ready.get(session.session_id)
+            error = self._vod_chat_error.get(session.session_id, "")
+        timeout = float(self.config.get("chat.timeout_seconds", 300))
+        if ready is not None:
+            finished = ready.wait(timeout=timeout)
+            with self._chat_guard:
+                error = self._vod_chat_error.get(session.session_id, "")
+            if not finished and not error:
+                raise ChatError("VOD chat download is still running")
+        path = vod_json_path(session.path)
+        messages: list[ChatMessage] = []
+        if path.is_file():
+            try:
+                messages = load_messages(path)
+            except ChatError:
+                messages = []
+        if not messages:
+            session_chat = session_chat_dir(session.path) / CHAT_JSON
+            if session_chat.is_file():
+                try:
+                    messages = load_messages(session_chat)
+                except ChatError:
+                    messages = []
+        if error and not messages:
+            raise ChatError(error)
+        # VOD comments were shifted so t=0 is our media start.
+        return slice_messages(messages, start, end)
 
     def _require_manual_mutation_owner(self, session: Session,
                                        operation: str) -> None:
@@ -3117,7 +3486,7 @@ class Pipeline:
             raise RuntimeError(reason)
         source, reason = self._summary_source(session, chunk)
         if source is None:
-            raise RuntimeError(f"cannot write a rundown: {reason}")
+            raise RuntimeError(f"cannot write a report: {reason}")
         return self._queue_summary(session, chunk)
 
     @contextmanager
@@ -3187,12 +3556,12 @@ class Pipeline:
             load_words(self.transcriber.words_path(session, item))
             rendered = {
                 name: (directory / name).read_text(encoding="utf-8")
-                for name in (*GENERATION_FILES, "rundown.md")
+                for name in (*GENERATION_FILES, REPORT_NAME, LEGACY_REPORT_NAME)
                 if (directory / name).is_file()
             }
             edit, source = split_publication(directory, rendered)
             publications.append(
-                (edit[0], edit[1], (*EDIT_OWNED, "rundown.md")))
+                (edit[0], edit[1], (*EDIT_OWNED, REPORT_NAME, LEGACY_REPORT_NAME)))
             publications.append(source)
             states[item.index] = self._transcript_artifact_state(item)
         return publications, states
@@ -3239,8 +3608,14 @@ class Pipeline:
             # nothing.
             previous_chunk = session.chunk(chunk.index - 1)
             following_chunk = session.chunk(chunk.index + 1)
+            # Never hold a RECORDING neighbor across a Deepgram rebuild: on
+            # Windows the mutation lock is per-handle, so rolling ASR and
+            # remux of the live chunk would stall for the whole rebuild.
             tracked = [item for item in (previous_chunk, chunk, following_chunk)
-                       if item is not None]
+                       if item is not None
+                       and item.status not in (STARTING, RECORDING)]
+            if chunk not in tracked:
+                tracked.append(chunk)
             with self._transcript_mutation_locks(session, tracked):
                 before = {
                     item.index: self._current_export_generation(session, item)
@@ -4042,6 +4417,25 @@ class Pipeline:
                 lambda job, name=channel: self._check_channel(name),
             )
 
+    def refresh_now(self) -> dict[str, Any]:
+        """Operator refresh: re-check live status now, return current state.
+
+        The dashboard poll is a cheap read of whatever the watcher last saw.
+        Refresh is the control that asks again, ignoring the recent-check skip.
+        Probes run on the probe pool and are not waited for -- a live check can
+        block for tens of seconds, and this is called from the request thread.
+        The same job key as the watcher means a check already in flight is not
+        doubled; the next poll picks up the result.
+        """
+        for channel in self._channels_to_probe():
+            self.probe_jobs.submit(
+                f"watch-probe:{channel}",
+                f"{channel}: checking if live",
+                "probe",
+                lambda job, name=channel: self._check_channel(name, force=True),
+            )
+        return self.state_payload()
+
     def _check_channel(self, channel: str, *, force: bool = False,
                        request_id: str = "") -> None:
         status = self._live_status.setdefault(channel, {})
@@ -4214,19 +4608,20 @@ class Pipeline:
             "1. Import the `master/` folder into Premiere, then select the clips "
             "and **Proxy → Attach Proxies…** — the `Proxies/` names match Adobe's "
             "own convention, so the dialog finds them.",
-            "2. Read `transcripts/<chunk>/rundown.md` to find what is worth "
-            "keeping.",
+            "2. Read `transcripts/<chunk>/report.md` — the editor's cut list, "
+            "with timestamps, best moments (from the transcript and the chat), "
+            "and Shorts candidates.",
             "3. Load the master in the **Source Monitor** (not a sequence), then "
             "`Window > Text` → Transcript → `…` → **Import Static Transcript** "
             "and choose that chunk's `premiere.json`.",
             "",
             "Each chunk folder holds only those four things you open — the "
-            "rundown, `premiere.json`, `transcript.srt` and `censor-words.txt`. "
+            "report, `premiere.json`, `transcript.srt` and `censor-words.txt`. "
             "`source/` beside them keeps what the pipeline reads: the word "
             "stream every export is rebuilt from, the verbatim Deepgram "
-            "responses, and the export manifest.",
+            "responses, the chat, and the export manifest.",
             "",
-            "| Chunk | Starts at | Duration | Size | Resolution | Master | Proxy | Transcript | Rundown |",
+            "| Chunk | Starts at | Duration | Size | Resolution | Master | Proxy | Transcript | Chat | Report |",
             "|---|---|---|---|---|---|---|---|---|",
         ]
         for chunk in sorted(session.chunks, key=lambda item: item.index):
@@ -4239,7 +4634,8 @@ class Pipeline:
                 f"{chunk.master_name or '—'} | "
                 f"{chunk.proxy_name or chunk.proxy_status} | "
                 f"{'yes' if (transcript_dir / 'premiere.json').exists() else chunk.transcript_status} | "
-                f"{'yes' if (transcript_dir / 'rundown.md').exists() else chunk.summary_status} |"
+                f"{'yes' if (transcript_dir / SOURCE_DIR / CHAT_JSON).exists() else chunk.chat_status} | "
+                f"{'yes' if (transcript_dir / REPORT_NAME).exists() or (transcript_dir / LEGACY_REPORT_NAME).exists() else chunk.summary_status} |"
             )
 
         if session.ad_events:
@@ -4320,7 +4716,6 @@ class Pipeline:
         summary_available, summary_reason = self._summary_capability()
         summary_provider = str(
             self.config.get("summary.provider") or "claude-cli").lower()
-        summary_secret = PROVIDER_SECRETS.get(summary_provider, "")
         return {
             "now": time.time(),
             "lifecycle": {
@@ -4341,13 +4736,7 @@ class Pipeline:
                 "deepgram": bool(self.config.secret("deepgram_api_key")),
                 "twitch_token": bool(self.config.secret("twitch_oauth_token")),
                 "claude_cli": bool(self.tools.claude),
-                "anthropic_api": bool(
-                    self.config.secret("anthropic_api_key")),
-                # Whichever key the *selected* engine needs, so the dashboard
-                # badge does not have to know which providers take keys.
-                "summary_key": bool(summary_secret
-                                    and self.config.secret(summary_secret)),
-                "summary_key_name": summary_secret,
+                "grok_cli": bool(self.tools.grok),
                 "summary_provider": summary_provider,
                 "summary_available": summary_available,
                 "summary_unavailable_reason": summary_reason,

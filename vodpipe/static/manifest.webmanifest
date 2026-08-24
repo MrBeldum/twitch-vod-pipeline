@@ -1,0 +1,14 @@
+{
+  "name": "VOD Pipeline",
+  "short_name": "VOD Pipeline",
+  "description": "Record Twitch, transcribe, editor report.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0c0d12",
+  "theme_color": "#0c0d12",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon.png", "sizes": "256x256", "type": "image/png", "purpose": "any" }
+  ]
+}

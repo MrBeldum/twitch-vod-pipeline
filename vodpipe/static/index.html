@@ -3,76 +3,89 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0c0d12">
 <title>VOD Pipeline</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>%F0%9F%94%B4</text></svg>">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="icon" href="/icon.png" type="image/png" sizes="256x256">
+<link rel="apple-touch-icon" href="/icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 <header>
-  <h1>VOD&nbsp;Pipeline</h1>
+  <div class="brand">
+    <img src="/icon.svg" width="28" height="28" alt="">
+    <h1>VOD Pipeline</h1>
+    <div id="capabilities" class="badges"></div>
+  </div>
   <div id="connection" class="connection connecting" role="status" aria-live="polite">Connecting…</div>
-  <div id="capabilities" class="badges"></div>
   <div class="spacer"></div>
   <div id="disk" class="disk"></div>
-  <button id="settings-toggle" class="ghost">Settings</button>
+  <button id="refresh" class="ghost" type="button" title="Re-check live status and reload this view (R or F5)">Refresh</button>
+  <button id="settings-toggle" class="ghost" type="button">Settings</button>
 </header>
 
 <main>
-  <section id="channels-panel" class="panel">
-    <div class="panel-head">
-      <h2>Channels</h2>
-      <form id="add-channel" autocomplete="off">
-        <input id="channel-input" placeholder="channel name or twitch.tv URL" spellcheck="false">
-        <button type="submit">Add</button>
-      </form>
-    </div>
-    <div id="channels" class="channels"></div>
+  <section id="live-panel" class="panel idle">
+    <div class="panel-head"><h2>Recording now</h2></div>
+    <div id="live" class="live"><div class="empty">Loading…</div></div>
   </section>
 
-  <section id="vod-panel" class="panel">
-    <div class="panel-head">
-      <h2>Download a VOD</h2>
+  <div class="capture-row">
+    <section id="channels-panel" class="panel">
+      <div class="panel-head">
+        <h2>Channels</h2>
+        <form id="add-channel" autocomplete="off">
+          <input id="channel-input" placeholder="channel name or twitch.tv URL" spellcheck="false" aria-label="Channel name or Twitch URL">
+          <button type="submit">Add</button>
+        </form>
+      </div>
+      <div id="channels" class="channels"><div class="empty">Loading…</div></div>
+    </section>
+
+    <section id="vod-panel" class="panel">
+      <div class="panel-head">
+        <h2>Download a VOD</h2>
+      </div>
       <form id="add-vod" autocomplete="off">
-        <input id="vod-input" placeholder="twitch.tv/videos/… or video id" spellcheck="false">
-        <input id="vod-start" class="vod-range" placeholder="start (optional)" spellcheck="false" title="HH:MM:SS or seconds — where to begin in the VOD">
-        <input id="vod-duration" class="vod-range" placeholder="length (optional)" spellcheck="false" title="HH:MM:SS or seconds — how much to download">
+        <input id="vod-input" placeholder="twitch.tv/videos/… or video id" spellcheck="false" aria-label="VOD URL or video id">
+        <input id="vod-start" class="vod-range" placeholder="start" spellcheck="false" aria-label="Start time" title="HH:MM:SS or seconds — where to begin in the VOD">
+        <input id="vod-duration" class="vod-range" placeholder="length" spellcheck="false" aria-label="Duration" title="HH:MM:SS or seconds — how much to download">
         <button type="submit">Download</button>
       </form>
-    </div>
-    <p class="hint">Downloads an archived VOD through the same pipeline as a live recording:
-      masters, proxies, per-chunk transcripts and rundowns. Leave start/length blank for the whole VOD.</p>
-  </section>
-
-  <section id="live-panel" class="panel">
-    <div class="panel-head"><h2>Recording now</h2></div>
-    <div id="live" class="live"></div>
-  </section>
+      <p class="hint vod-hint">Blank start/length means the whole VOD. Chat comes with it and feeds the editor report.</p>
+    </section>
+  </div>
 
   <section id="jobs-panel" class="panel collapsed">
     <div class="panel-head">
-      <h2>Background work <span id="jobs-count" class="pill"></span></h2>
-      <button class="ghost" data-toggle="jobs-panel">Show</button>
+      <h2>Jobs <span id="jobs-count" class="pill"></span></h2>
+      <button class="ghost" data-toggle="jobs-panel" type="button">Show</button>
     </div>
-    <div id="jobs" class="jobs"></div>
+    <div id="jobs" class="jobs"><div class="empty">Loading…</div></div>
   </section>
 
   <section id="sessions-panel" class="panel">
-    <div class="panel-head"><h2>Sessions</h2></div>
-    <div id="sessions" class="sessions"></div>
+    <div class="panel-head">
+      <h2>Sessions</h2>
+      <input id="session-search" type="search" placeholder="Filter by channel, id, or status  (/)" spellcheck="false" autocomplete="off" aria-label="Filter sessions">
+    </div>
+    <div id="sessions" class="sessions"><div class="empty">Loading…</div></div>
   </section>
 </main>
 
+<div id="settings-backdrop" class="backdrop" hidden></div>
 <div id="settings" class="drawer" hidden>
   <div class="drawer-head">
     <h2>Settings</h2>
-    <button id="settings-close" class="ghost">Close</button>
+    <button id="settings-close" class="ghost" type="button">Close</button>
   </div>
   <div class="drawer-body">
     <p class="hint">Secrets are stored in <code>config.json</code> beside the app, which is
       gitignored. Leave a key field blank to keep the stored value.</p>
     <div id="settings-fields"></div>
     <div class="drawer-actions">
-      <button id="settings-save">Save</button>
+      <button id="settings-save" type="button">Save</button>
       <span id="settings-status" class="hint"></span>
     </div>
   </div>
@@ -83,11 +96,12 @@
     <div class="modal-head">
       <strong id="modal-title"></strong>
       <div>
-        <button id="modal-reveal" class="ghost">Show in Explorer</button>
-        <button id="modal-close" class="ghost">Close</button>
+        <button id="modal-view" class="ghost" type="button" hidden>Raw</button>
+        <button id="modal-reveal" class="ghost" type="button">Show in Explorer</button>
+        <button id="modal-close" class="ghost" type="button">Close</button>
       </div>
     </div>
-    <pre id="modal-body"></pre>
+    <div id="modal-body"></div>
   </div>
 </div>
 

@@ -103,7 +103,11 @@ class SummaryPolicyTests(unittest.TestCase):
             ClaudeCliModel("")
         self.assertIn("claude", str(caught.exception).lower())
 
-    def test_anthropic_provider_requires_a_key(self):
+    def test_a_provider_the_transport_does_not_know_is_refused(self):
+        """The schema rewrites a *retired* engine to claude-cli, but a name that
+        reaches the transport some other way must not quietly become the
+        default -- a rundown written by an engine nobody selected is worse than
+        no rundown."""
         from vodpipe.summarize import build_summarizer
         config = self.config(provider="anthropic-api")
         with self.assertRaises(RuntimeError):
