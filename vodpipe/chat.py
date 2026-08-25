@@ -97,16 +97,41 @@ class ChatMessage:
 # --------------------------------------------------------------------- IRC parse
 
 
+# IRCv3 tag escapes, decoded in ONE left-to-right pass. Chained `str.replace`
+# calls cannot get this right in either order, which is what used to be here.
+# Take an escaped backslash immediately followed by a literal s -- three
+# characters: backslash, backslash, s. Decoding the escaped-backslash pair
+# last lets the *second* backslash pair with the s first, so it decodes as an
+# escaped space and yields backslash-space instead of backslash-s. Decoding
+# that pair first is no better: the backslash it produces is then re-read as
+# the opening of another escape. Only a single pass that consumes both
+# characters of an escape at once is correct.
+#
+# Reachable through `system-msg`, the escaped user-facing text a USERNOTICE
+# falls back to for its body.
+_TAG_ESCAPES = {":": ";", "s": " ", "r": "\r", "n": "\n", "\\": "\\"}
+
+
 def unescape_tag(value: str) -> str:
-    # IRCv3 tag escapes. Order matters: `\\` must be last so a decoded backslash
-    # is not then treated as the start of another escape.
-    return (
-        value.replace("\\:", ";")
-             .replace("\\s", " ")
-             .replace("\\r", "\r")
-             .replace("\\n", "\n")
-             .replace("\\\\", "\\")
-    )
+    if "\\" not in value:
+        return value
+    out: list[str] = []
+    index = 0
+    length = len(value)
+    while index < length:
+        char = value[index]
+        if char != "\\":
+            out.append(char)
+            index += 1
+            continue
+        # A lone trailing backslash is dropped, per the IRCv3 spec.
+        if index + 1 >= length:
+            break
+        nxt = value[index + 1]
+        # An escape with no defined meaning drops the backslash (`\q` -> `q`).
+        out.append(_TAG_ESCAPES.get(nxt, nxt))
+        index += 2
+    return "".join(out)
 
 
 def parse_tags(raw: str) -> dict[str, str]:

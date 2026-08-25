@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#0c0d12">
+<meta name="theme-color" content="#181818">
 <title>VOD Pipeline</title>
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
 <link rel="icon" href="/icon.png" type="image/png" sizes="256x256">
@@ -12,6 +12,7 @@
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+<a class="skip" href="#live-panel">Skip to recording</a>
 <header>
   <div class="brand">
     <img src="/icon.svg" width="28" height="28" alt="">
@@ -21,7 +22,7 @@
   <div id="connection" class="connection connecting" role="status" aria-live="polite">Connecting…</div>
   <div class="spacer"></div>
   <div id="disk" class="disk"></div>
-  <button id="refresh" class="ghost" type="button" title="Re-check live status and reload this view (R or F5)">Refresh</button>
+  <button id="refresh" class="ghost" type="button" title="Re-check live status and reload this view (R or F5)">Refresh <kbd>R</kbd></button>
   <button id="settings-toggle" class="ghost" type="button">Settings</button>
 </header>
 
@@ -84,10 +85,10 @@
     <p class="hint">Secrets are stored in <code>config.json</code> beside the app, which is
       gitignored. Leave a key field blank to keep the stored value.</p>
     <div id="settings-fields"></div>
-    <div class="drawer-actions">
-      <button id="settings-save" type="button">Save</button>
-      <span id="settings-status" class="hint"></span>
-    </div>
+  </div>
+  <div class="drawer-actions">
+    <button id="settings-save" type="button">Save</button>
+    <span id="settings-status" class="hint"></span>
   </div>
 </div>
 

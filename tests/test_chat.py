@@ -12,6 +12,7 @@ from vodpipe.chat import (
     load_messages,
     parse_irc_line,
     parse_tags,
+    unescape_tag,
     slice_messages,
     write_chat_exports,
     _comments_from_edges,
@@ -149,3 +150,50 @@ class VodCommentParseTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TagEscapeTests(unittest.TestCase):
+    """IRCv3 tag escapes, decoded in one pass.
+
+    The old chained-`str.replace` decoder mangled an escaped backslash that was
+    followed by a letter another escape uses, because the backslash it had just
+    produced (or had yet to produce) re-paired with that letter.
+    """
+
+    def test_escaped_backslash_before_escape_letters_survives(self):
+        cases = {
+            "\\\\s": "\\s",
+            "\\\\n": "\\n",
+            "\\\\r": "\\r",
+            "\\\\:": "\\:",
+        }
+        for raw, want in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(unescape_tag(raw), want)
+
+    def test_ordinary_escapes_still_decode(self):
+        self.assertEqual(unescape_tag("hi\\sthere"), "hi there")
+        self.assertEqual(unescape_tag("a\\:b"), "a;b")
+        self.assertEqual(unescape_tag("a\\nb"), "a\nb")
+        self.assertEqual(unescape_tag("a\\rb"), "a\rb")
+        self.assertEqual(unescape_tag("\\\\"), "\\")
+        self.assertEqual(unescape_tag("plain"), "plain")
+
+    def test_escaped_backslash_then_escaped_space(self):
+        self.assertEqual(unescape_tag("\\\\\\s"), "\\ ")
+
+    def test_undefined_escape_drops_the_backslash(self):
+        self.assertEqual(unescape_tag("\\q"), "q")
+
+    def test_lone_trailing_backslash_is_dropped(self):
+        self.assertEqual(unescape_tag("abc\\"), "abc")
+
+    def test_system_msg_round_trips_through_parse_tags(self):
+        """`system-msg` is escaped user-facing text a USERNOTICE falls back to."""
+        bs = chr(92)
+        # Built from parts so the expectation cannot drift on literal counting:
+        # an escaped space, then an escaped backslash, then an escaped space.
+        raw = "@msg-id=resub;system-msg=" + "Dan" + bs + "s" + "paid" + (
+            bs + bs) + bs + "s" + "months"
+        tags = parse_tags(raw)
+        self.assertEqual(tags["system-msg"], "Dan paid" + bs + " months")

@@ -145,6 +145,36 @@ enables the ad-free path.
   Per-chunk `source/chat.json` + `moments.json` (laugh emotes, copypasta, clip-calls —
   not messages/second) go into the report prompt. A chat failure never fails a recording.
 
+- **IRCv3 tag escapes are decoded in one left-to-right pass, never by chained
+  `str.replace`.** *CORRECTED 2026-08-25 (audit).* The decoder ran five
+  sequential replaces with a comment asserting that handling the
+  escaped-backslash pair last was the safe order. It is not safe in either
+  order. Given an escaped backslash followed by a literal `s` -- three
+  characters: backslash, backslash, s -- decoding that pair last lets the
+  *second* backslash pair with the `s` first, so it reads as an escaped space
+  and yields backslash-space; decoding it first leaves a backslash that is then
+  re-read as the opening of another escape. Only a scanner that consumes both
+  characters of an escape at once is correct. Reachable through `system-msg`,
+  the escaped user-facing text a USERNOTICE with no trailing payload falls back
+  to for its body, and `parse_tags` runs every tag through it. Six cases in
+  `tests/test_chat.py::TagEscapeTests`, all of which fail against the old
+  decoder.
+
+- **The chat-moment window scan is a two-pointer sweep, not a rescan.**
+  *CORRECTED 2026-08-25 (audit).* `analyse_chat` re-filtered every message for
+  every window: a two-hour chunk at a 2 s hop is 3,600 windows, so a busy
+  channel paid ~19 s of pure Python per chunk and the cost grew with chat
+  volume. Windows advance monotonically, so the members of one are a contiguous
+  slice of an offset-sorted index -- 1.2 s for the same 60,000 messages.
+  **The slice is re-sorted back into original order before scoring, and that is
+  load-bearing:** `_score_window` is order-sensitive (`_samples` dedupes on
+  first occurrence and sorts stably, and the copypasta tally breaks ties on
+  insertion order), so visiting in offset order would quietly change which
+  sample lines reach the report. The contract is not that output is independent
+  of input order -- it never was -- but that the sweep returns exactly what the
+  rescan returned for the same input. `tests/test_moments.py::WindowSweepTests`
+  keeps the old implementation as the reference and diffs the two.
+
 - **Recovery probes the lock the recorder actually holds.** A VOD download locks
   `vod-{id}`, not the broadcaster's channel. Recovery used to probe the channel for
   both, so a second process could remux and delete a `.ts` the VOD downloader was
@@ -226,6 +256,21 @@ Implementation notes worth knowing before changing anything:
   (`packaging/host.cs`, built by `vodpipe install`): AppUserModelID
   `MrBeldum.VODPipeline`, Start Menu shortcut, Apps & Features uninstall key.
   Closing the Chromium window still shuts the pipeline down.
+- **The dashboard's design system is `DESIGN.md`, and its palette is tested.**
+  Tokens, spacing, component contracts and the accepted-debt list live there;
+  read it before restyling anything. A label on a filled button must use the
+  matching `--on-*` token rather than a literal `#fff`:
+  `--on-live: #ffffff` on `--live: #ff6363` measures **2.91:1**, which fails
+  even the 3:1 non-text floor, and it shipped on Record, Stop and the pulsing
+  REC stamp -- the three loudest controls in the app. The retired violet
+  palette had passed at 4.75:1, so the restyle regressed it silently; nothing
+  in a screenshot says "2.91". `tests/test_ui_contract.py::PaletteContrastTests`
+  now computes the ratios straight out of `style.css`, so a palette re-picked by
+  eye fails the suite instead of the user. Two known gaps are recorded as
+  accepted debt in `DESIGN.md` rather than quietly fixed: there is no focus trap
+  on the drawer (it claimed one until the 2026-08-25 audit), and `--line`
+  hairlines sit near 1.3:1, so an unfocused input is delimited by little more
+  than its fill.
 - **A rundown engine gets more than one attempt** (`summary.max_retries`, default 3,
   bounded by `summary.timeout_seconds` overall). *Added 2026-08-16.* An API transport that
   briefly lived next door retried and the `claude -p` transport did not, which was

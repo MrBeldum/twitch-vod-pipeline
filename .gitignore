@@ -14,6 +14,9 @@ logs/
 /VODPipeline.exe
 /VODPipeline.VisualElementsManifest.xml
 
+# Agent tooling scratch, not part of the project
+.omo/
+
 # Anything that lands in the repo by accident
 *.ts
 *.mp4

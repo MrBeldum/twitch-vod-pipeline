@@ -32,7 +32,7 @@ MAX_MOMENTS = 16
 LAUGH_TOKENS = frozenset({
     "kekw", "kek", "lul", "lulw", "omegalul", "omegallul", "lol", "lmao",
     "lmfao", "rofl", "lel", "ikru", "icant", "joy", "joycam", "xdd", "xd",
-    "haha", "hahaha", "hahahaha", "jajaja", "pepelaugh", "pepelaugh",
+    "haha", "hahaha", "hahahaha", "jajaja", "pepelaugh",
     "laugh", "crying", "dead", "ripbozo", "gottem", "owned",
     "ㅋㅋ", "ㅋㅋㅋ", "ㅋㅋㅋㅋ", "wwwww", "wwwwww",
 })
@@ -116,11 +116,32 @@ def analyse_chat(messages: Iterable[ChatMessage], *,
     baseline = len(items) / duration if duration else 0.0
 
     candidates: list[Moment] = []
+    # Windows advance monotonically, so sweep an offset-sorted index with two
+    # pointers instead of rescanning every message for every window. At two
+    # hours and a 2s hop that is 3600 windows; the rescan cost ~19s of pure
+    # Python on a 60k-message chunk and grows with chat volume.
+    #
+    # `order` is sorted by offset only, so the window's members are a
+    # contiguous slice of it; re-sorting that slice by original index hands
+    # `_score_window` the same bucket, in the same order, that the rescan
+    # produced. That ordering is load-bearing -- `_samples` dedupes on first
+    # occurrence and its weight sort is stable, and the copypasta tally
+    # breaks ties on insertion order -- so it is preserved exactly rather
+    # than left to whatever order the sweep happens to visit.
+    order = sorted(range(len(classified)), key=lambda i: classified[i][0].offset)
+    offsets = [classified[i][0].offset for i in order]
+    lo = 0
+    hi = 0
     start = 0.0
     while start < duration:
         end = min(duration, start + window)
-        bucket = [(item, flags) for item, flags in classified
-                  if start <= item.offset < end]
+        while lo < len(order) and offsets[lo] < start:
+            lo += 1
+        if hi < lo:
+            hi = lo
+        while hi < len(order) and offsets[hi] < end:
+            hi += 1
+        bucket = [classified[i] for i in sorted(order[lo:hi])]
         moment = _score_window(bucket, start, end, baseline,
                                session_offset=session_offset)
         if moment is not None:

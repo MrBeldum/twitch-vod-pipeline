@@ -83,6 +83,20 @@ class SelectorIntegrityTests(unittest.TestCase):
                            "disk", "connection", "toast", "settings-fields"):
             self.assertIn(element_id, self.markup_ids(), element_id)
 
+    def test_settings_save_is_a_drawer_footer_not_sticky_in_the_scroller(self):
+        """Sticky Save inside `.drawer-body` jumped and overlapped fields on
+        scroll. The actions row has to be a sibling of the scrolling body."""
+        body = re.search(
+            r'<div class="drawer-body">(.*?)</div>\s*'
+            r'<div class="drawer-actions">',
+            HTML, re.S)
+        self.assertIsNotNone(body, "drawer-actions must follow drawer-body, not sit inside it")
+        self.assertIn('id="settings-save"', HTML)
+        self.assertNotIn("id=\"settings-save\"", body.group(1))
+        actions = re.search(r"\.drawer-actions\s*\{([^}]*)\}", CSS)
+        self.assertIsNotNone(actions, "style.css needs a .drawer-actions rule")
+        self.assertNotIn("sticky", actions.group(1))
+
 
 class ProductReadinessTests(unittest.TestCase):
     def test_file_preview_uses_opaque_artifact_ids(self):
@@ -190,3 +204,70 @@ class ChunkTableTests(unittest.TestCase):
         """This build records and transcribes; it does not cut."""
         self.assertNotIn("edit_status", self.body())
         self.assertNotIn("'Edit'", self.body())
+
+
+def _srgb_luminance(hex_colour: str) -> float:
+    raw = hex_colour.lstrip("#")
+    if len(raw) == 3:
+        raw = "".join(ch * 2 for ch in raw)
+    channels = [int(raw[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+    linear = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+              for c in channels]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def contrast_ratio(foreground: str, background: str) -> float:
+    high, low = sorted((_srgb_luminance(foreground), _srgb_luminance(background)),
+                       reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+class PaletteContrastTests(unittest.TestCase):
+    """DESIGN.md commits to WCAG 2.2 AA. The tokens have to actually meet it.
+
+    The restyle set `--on-live` to white, which is 2.91:1 on `--live` -- below
+    even the 3:1 non-text floor -- and it lands on Record, Stop and the REC
+    stamp, the three loudest controls in the app. A palette is exactly the kind
+    of thing that is re-picked by eye later, so the arithmetic is pinned here.
+    """
+
+    def token(self, name: str) -> str:
+        match = re.search(rf"^\s*{re.escape(name)}:\s*(#[0-9a-fA-F]{{3,8}});",
+                          CSS, re.M)
+        self.assertIsNotNone(match, f"{name} must be a hex token in :root")
+        return match.group(1)
+
+    def test_text_on_its_own_surface_meets_aa(self):
+        for fg, bg, floor in (("--text", "--panel", 4.5),
+                              ("--text", "--bg", 4.5),
+                              ("--muted", "--panel", 4.5),
+                              ("--accent", "--panel", 4.5)):
+            with self.subTest(pair=(fg, bg)):
+                ratio = contrast_ratio(self.token(fg), self.token(bg))
+                self.assertGreaterEqual(round(ratio, 2), floor,
+                                        f"{fg} on {bg} is {ratio:.2f}:1")
+
+    def test_button_fills_carry_readable_labels(self):
+        """`--on-live`/`--on-accent` are the label colours on a filled button."""
+        for on_token, fill_token in (("--on-live", "--live"),
+                                     ("--on-accent", "--accent")):
+            with self.subTest(fill=fill_token):
+                ratio = contrast_ratio(self.token(on_token),
+                                       self.token(fill_token))
+                self.assertGreaterEqual(
+                    round(ratio, 2), 4.5,
+                    f"{on_token} on {fill_token} is {ratio:.2f}:1; white on the "
+                    f"live red was 2.91:1 and shipped on Record and Stop")
+
+    def test_status_colours_are_legible_on_the_page(self):
+        for name in ("--live", "--ok", "--warn", "--err"):
+            with self.subTest(token=name):
+                ratio = contrast_ratio(self.token(name), self.token("--bg"))
+                self.assertGreaterEqual(round(ratio, 2), 4.5,
+                                        f"{name} on --bg is {ratio:.2f}:1")
+
+    def test_record_and_stop_use_the_on_live_token_not_a_literal(self):
+        """A literal `#fff` here would sail straight past the checks above."""
+        match = re.search(r"button\.stop,\s*button\.record\s*\{([^}]*)\}", CSS)
+        self.assertIsNotNone(match, "button.stop/.record rule must exist")
+        self.assertIn("var(--on-live)", match.group(1))
