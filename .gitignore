@@ -22,3 +22,11 @@ logs/
 *.mp4
 *.flac
 *.log
+
+# Python packaging output
+/dist/
+/build/
+/release/
+*.egg-info/
+.venv/
+venv/

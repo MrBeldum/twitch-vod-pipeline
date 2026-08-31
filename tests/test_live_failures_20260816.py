@@ -1,4 +1,4 @@
-"""Regressions for the failures a live 8-hour hasanabi recording produced.
+"""Regressions for the failures a live 8-hour examplechannel recording produced.
 
 Four defects showed up on 2026-08-16 that no fixture had exercised, because
 each of them needs either a real ASR provider, a real multi-gigabyte chunk, or
@@ -284,7 +284,7 @@ if __name__ == "__main__":
 class CaptureResilienceTests(unittest.TestCase):
     """The recording must survive a network stall, not die on one.
 
-    zy0xxx was captured three times in fifteen minutes and every attempt died
+    otherchannel was captured three times in fifteen minutes and every attempt died
     the same way: streamlink logged `Sequence gap of 23 segments ... will result
     in incoherent output data`, the timestamps jumped, and ffmpeg aborted with
     `Application provided invalid, non monotonically increasing dts to muxer in

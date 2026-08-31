@@ -284,13 +284,14 @@ def cmd_doctor(config: Config) -> int:
     print(f"  requested    {config.get('recording.quality', 'best')}")
     print(f"  floor        {str(floor) + 'p' if floor else 'no minimum'}"
           f"  ({config.get('recording.on_low_quality', 'warn')} if below)")
-    # Measured 2026-08-14: from a Korean IP Twitch withholds the source rendition
-    # on every channel, leaving only transcodes -- 720p60 on many large channels.
-    # A VPN to another region restores it. This is worth saying unconditionally
-    # because the symptom is a silently mediocre master, not an error.
-    print("  note         a Korean IP is served transcode-only ladders (no source")
-    print("               rendition); a VPN or the network proxy below restores")
-    print("               source quality. See README, 'Recording from South Korea'.")
+    # In regions Twitch has withdrawn from it withholds the source rendition on
+    # every channel, leaving only transcodes -- 720p60 on many large channels.
+    # Routing through another region restores it. This is worth saying
+    # unconditionally: the symptom is a silently mediocre master, not an error.
+    print("  note         regions Twitch has withdrawn from are served")
+    print("               transcode-only ladders (no source rendition); a proxy or")
+    print("               VPN restores it. See README, 'Recording from a")
+    print("               withheld-source region'.")
 
     print("\nNetwork")
     proxy = str(config.get("network.proxy", "") or "").strip()
@@ -302,7 +303,7 @@ def cmd_doctor(config: Config) -> int:
               "(streamlink routes live capture, VOD download and probes through it)")
     else:
         print("  proxy        none  (set network.proxy to reach Twitch from a "
-              "region it has left, e.g. South Korea)")
+              "region it has withdrawn from)")
 
     print("\nStorage")
     root = config.masters_root

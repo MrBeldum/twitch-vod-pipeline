@@ -4,7 +4,7 @@ Two eight-hour sessions produced eight masters. Three of them went wrong, in
 three different ways, and every one of them was reported as something it was
 not:
 
-* **hasanabi c002** died in the remux on an ffmpeg assertion --
+* **examplechannel c002** died in the remux on an ffmpeg assertion --
   ``next_dts <= 0x7fffffff`` in movenc's `get_cluster_duration`, i.e. one
   sample's duration overflowing a 32-bit field, which is a DTS gap of more than
   six hours inside a two-hour file. Re-running the identical command over the
@@ -12,11 +12,11 @@ not:
   somewhere other than the recording. There was no retry, so the chunk kept a
   `.ts`, its master was never built, and its proxy failed behind it with
   "master is missing".
-* **zy0xxx c000** published a master whose sample-to-chunk map sent every sample
+* **otherchannel c000** published a master whose sample-to-chunk map sent every sample
   after one entry to the wrong bytes: 31 MB of ``Invalid NAL unit size`` on a
   file whose header was immaculate. `validate_master` passed it and the `.ts`
   was deleted.
-* **zy0xxx c001** published a master with one chunk offset carrying a spurious
+* **otherchannel c001** published a master with one chunk offset carrying a spurious
   high bit, so the demuxer stopped delivering packets at 3159s of a 7199s file
   -- in silence, because as far as it was concerned the index simply ended.
   `validate_master` passed that too, and that `.ts` was deleted as well.
@@ -118,7 +118,7 @@ class MasterIntegrityTests(unittest.TestCase):
         verify_master_readable(self.tools, self.master)
 
     def test_a_chunk_offset_with_a_stray_high_bit_is_caught(self):
-        """zy0xxx c001: co64 entry 136075 read 2**45 + its real value.
+        """otherchannel c001: co64 entry 136075 read 2**45 + its real value.
 
         The demuxer stopped there and said nothing, so every metadata check
         still described a complete file. Only counting what it actually hands
@@ -147,7 +147,7 @@ class MasterIntegrityTests(unittest.TestCase):
         self.assertGreater(previous, 0)
 
     def test_a_sample_to_chunk_map_that_lies_is_caught(self):
-        """zy0xxx c000: one stsc entry, and every sample after it misaddressed.
+        """otherchannel c000: one stsc entry, and every sample after it misaddressed.
 
         This one delivers the full packet count at the right timestamps, so the
         span check passes and only the clean-read rule sees it.
@@ -183,7 +183,7 @@ class MasterIntegrityTests(unittest.TestCase):
 
 
 class RemuxRetryTests(PipelineFixture):
-    """hasanabi c002: one unclassifiable ffmpeg abort lost a master for good."""
+    """examplechannel c002: one unclassifiable ffmpeg abort lost a master for good."""
 
     def prepare(self, index: int = 0, duration: float = 10.0):
         chunk = self.chunk(index=index, duration=duration)

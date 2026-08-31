@@ -1,0 +1,57 @@
+name: Bug report
+description: Something the pipeline did wrong — a lost artifact, a failed job, a wrong output.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never paste `config.json`** — it holds your Deepgram key and Twitch OAuth token.
+        Redact channel names and paths you would rather not publish.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: The command or dashboard action, and whether it was a live recording, a VOD download, or a snapshot.
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `vodpipe doctor`
+      description: This reports your ffmpeg/streamlink/Python versions and what is missing.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: From `logs/`, or the session's own `logs/streamlink.log`. Include the error and a little context around it.
+      render: text
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: A release tag, or the commit you are on (`git rev-parse --short HEAD`).
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: Windows 11 26200
+    validations:
+      required: true

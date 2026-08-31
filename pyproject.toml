@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vodpipe"
+dynamic = ["version"]
+description = "Record Twitch streams into Premiere-ready masters, proxies, word-timed transcripts and editor reports."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "MrBeldum" }]
+keywords = ["twitch", "vod", "streamlink", "ffmpeg", "premiere", "transcription", "deepgram"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Intended Audience :: End Users/Desktop",
+    "Natural Language :: English",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Multimedia :: Video :: Capture",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Typing :: Typed",
+]
+
+# Deliberately empty, and a design constraint rather than an accident: the pipeline is
+# standard library only, so there is no wheel to build and nothing to resolve. See
+# CONTRIBUTING.md before adding anything here.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/MrBeldum/twitch-vod-pipeline"
+Repository = "https://github.com/MrBeldum/twitch-vod-pipeline"
+Issues = "https://github.com/MrBeldum/twitch-vod-pipeline/issues"
+Changelog = "https://github.com/MrBeldum/twitch-vod-pipeline/blob/main/CHANGELOG.md"
+
+[project.scripts]
+vodpipe = "vodpipe.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "vodpipe.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["vodpipe*"]
+
+[tool.setuptools.package-data]
+vodpipe = ["static/*"]

@@ -604,7 +604,7 @@ class ManifestContainmentTests(unittest.TestCase):
         }).chunks[0]
 
     def test_absolute_names_are_dropped(self):
-        chunk = self.restore(master_name=r"C:/Users/Daniel/Desktop/important.mp4")
+        chunk = self.restore(master_name=r"C:/Windows/System32/important.mp4")
         self.assertEqual(chunk.master_name, "")
 
     def test_traversal_is_dropped(self):

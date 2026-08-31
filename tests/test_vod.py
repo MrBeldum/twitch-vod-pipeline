@@ -79,7 +79,7 @@ class ParseVodTests(unittest.TestCase):
 
 class VodDirNameTests(unittest.TestCase):
     def test_uses_broadcaster_when_valid(self):
-        self.assertEqual(vod_dir_name("HasanAbi", "123"), "hasanabi")
+        self.assertEqual(vod_dir_name("ExampleChannel", "123"), "examplechannel")
 
     def test_strips_unsafe_characters(self):
         self.assertEqual(vod_dir_name("cool guy!", "123"), "coolguy")
@@ -156,20 +156,20 @@ class VodRecoveryLockTests(unittest.TestCase):
             "chat": {"enabled": False},
             "watcher": {"enabled": False},
         }), self.tmp / "config.json")
-        self.session_dir = (self.config.masters_root / "hasanabi" /
-                            "hasanabi_2026-01-01_000000_vodaaa")
+        self.session_dir = (self.config.masters_root / "examplechannel" /
+                            "examplechannel_2026-01-01_000000_vodaaa")
         for sub in ("live", "master", "transcripts", "logs"):
             (self.session_dir / sub).mkdir(parents=True)
         session = Session(
-            session_id=self.session_dir.name, channel="hasanabi",
+            session_id=self.session_dir.name, channel="examplechannel",
             started_at=1.0, directory=str(self.session_dir),
             status="recording", source_kind=SOURCE_VOD,
             source_url="https://www.twitch.tv/videos/99")
         session.chunks.append(Chunk(
-            index=0, session_id=session.session_id, channel="hasanabi",
-            started_at=1.0, ts_name="hasanabi_c000.ts",
-            master_name="hasanabi_c000.mp4", duration=4.0, status="recording"))
-        (self.session_dir / "live" / "hasanabi_c000.ts").write_bytes(b"ts")
+            index=0, session_id=session.session_id, channel="examplechannel",
+            started_at=1.0, ts_name="examplechannel_c000.ts",
+            master_name="examplechannel_c000.mp4", duration=4.0, status="recording"))
+        (self.session_dir / "live" / "examplechannel_c000.ts").write_bytes(b"ts")
         (self.session_dir / "session.json").write_text(
             json.dumps(session.to_dict()), encoding="utf-8")
 
@@ -194,12 +194,12 @@ class VodRecoveryLockTests(unittest.TestCase):
                              .read_text(encoding="utf-8"))
         self.assertEqual(on_disk["status"], "recording")
         self.assertTrue(any("another process" in line for line in actions), actions)
-        self.assertTrue((self.session_dir / "live" / "hasanabi_c000.ts").exists())
+        self.assertTrue((self.session_dir / "live" / "examplechannel_c000.ts").exists())
 
     def test_a_live_recording_of_the_same_channel_does_not_block_vod_recovery(self):
         from vodpipe.locks import ChannelLock
 
-        holder = ChannelLock(self.config.masters_root, "hasanabi").acquire()
+        holder = ChannelLock(self.config.masters_root, "examplechannel").acquire()
         try:
             pipeline = Pipeline(self.config)
             self.addCleanup(pipeline.shutdown, job_timeout=5)

@@ -20,19 +20,20 @@ master, and the distinction is the entire point of this module:
   floor. Nothing in this codebase can improve it; recording anyway is right, but
   saying so plainly is mandatory.
 
-Verified 2026-08-14, and the cause is regional. From a **South Korean IP** Twitch
-serves no `source` rendition at all -- every variant on every channel tested came
-back marked `IVS-VARIANT-SOURCE="transcode"`, and the master playlist carried
-`USER-COUNTRY="KR"`. What is left is the channel's transcode ladder, so the
-ceiling depends on which stack it is on: `2025-Transcode-ELT-V1` tops out at
-720p60, a custom stack can reach 1080p60. Connecting from Japan over a VPN
-restores the `source` rendition and with it true source quality.
+The second cause is usually regional. Twitch withholds the `source` rendition
+from IPs in countries it no longer operates in -- South Korea, which it left in
+February 2024, is the documented case. Every variant on every channel then comes
+back marked `IVS-VARIANT-SOURCE="transcode"`, with the master playlist carrying
+that country in `USER-COUNTRY`. What is left is the channel's transcode ladder,
+so the ceiling depends on which stack it is on: `2025-Transcode-ELT-V1` tops out
+at 720p60, a custom stack can reach 1080p60. Routing the connection through
+another region restores the `source` rendition and with it true source quality.
 
 So a low capture has two independent causes worth telling apart, and neither is
 a bad setting:
 
-* **No source rendition offered** (Korean IP). Fixed by connecting from another
-  region, not by any value in this config.
+* **No source rendition offered** (a withheld-source region). Fixed by routing
+  the connection elsewhere, not by any value in this config.
 * **The transcode ladder itself is short.** Even with source available, some
   channels simply have no tall transcode.
 
@@ -175,10 +176,10 @@ class QualityReport:
             return (
                 f"recording at {self.selected} ({self.height}p): Twitch offered "
                 f"nothing better for this channel (ladder: {ladder}). No setting "
-                f"here can raise it. From a South Korean IP Twitch withholds the "
-                f"source rendition entirely, so only transcodes are on offer -- "
-                f"connecting from another region (a VPN to Japan was confirmed to "
-                f"work) restores source quality. See README, 'Why a recording can "
+                f"here can raise it. In regions Twitch has withdrawn from it "
+                f"withholds the source rendition entirely, so only transcodes are "
+                f"on offer -- routing the connection through another region "
+                f"restores source quality. See README, 'Why a recording can "
                 f"be 720p'."
             )
         return (

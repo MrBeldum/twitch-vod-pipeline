@@ -1,0 +1,40 @@
+name: Feature request
+description: Propose a change. Please read CLAUDE.md first — a lot has been tried already.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        `CLAUDE.md` records the decisions this project has already settled and why, including
+        several features that were built and then deliberately removed (the automatic cut,
+        filler tagging, paid summary APIs). If your idea is one of those, say what is
+        different about your case.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that the pipeline makes hard or impossible?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like it to do
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you have tried instead
+      description: Existing settings, a manual workaround, another tool.
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraints
+      options:
+        - label: This can be done with the Python standard library only (no new dependencies).
+        - label: I have read the relevant section of CLAUDE.md.

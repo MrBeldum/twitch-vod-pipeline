@@ -1,7 +1,7 @@
 """Capture resolution: what Twitch offered, what we took, and saying so.
 
 The failure this guards against is not hypothetical. On 2026-08-13 four
-consecutive two-hour chunks of `hasanabi` were recorded at 1280x720 and nothing
+consecutive two-hour chunks of `examplechannel` were recorded at 1280x720 and nothing
 in the product mentioned it; it was discovered by opening a master. The log had
 the answer all along:
 
@@ -112,7 +112,7 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(report.describe(), "")
 
     def test_twitch_cap_is_named_as_such(self):
-        """The real hasanabi case: nothing better was on the ladder."""
+        """The real examplechannel case: nothing better was on the ladder."""
         report = self.report("720p60", ["audio_only", "160p", "360p", "480p", "720p60"])
         self.assertFalse(report.meets_floor)
         self.assertTrue(report.capped_by_twitch)

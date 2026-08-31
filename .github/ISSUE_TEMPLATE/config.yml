@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or idea
+    url: https://github.com/MrBeldum/twitch-vod-pipeline/discussions
+    about: Ask about usage, Premiere import, or propose a change before building it.
+  - name: Security vulnerability
+    url: https://github.com/MrBeldum/twitch-vod-pipeline/security/advisories/new
+    about: Report privately. Please do not open a public issue.

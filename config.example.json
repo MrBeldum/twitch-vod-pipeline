@@ -6,8 +6,8 @@
   },
   "channels": [],
   "paths": {
-    "masters_root": "C:\\Users\\Daniel\\Desktop\\twitch-vods",
-    "censor_master_list": "C:\\Users\\Daniel\\Desktop\\censored_words_master.txt"
+    "masters_root": "C:\\Users\\YOU\\Desktop\\twitch-vods",
+    "censor_master_list": "C:\\Users\\YOU\\Desktop\\censored_words_master.txt"
   },
   "recording": {
     "chunk_seconds": 7200,

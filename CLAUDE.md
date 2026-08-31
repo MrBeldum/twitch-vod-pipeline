@@ -9,14 +9,12 @@ without waiting for the chunk to finish, and routing all Twitch traffic through 
 HTTP/SOCKS proxy.
 
 **It records and transcribes; it does not cut.** The automatic edited cut was built and
-then retracted on 2026-08-17 at the user's request — see the note below. It now lives in
-its own repository, `github.com/MrBeldum/twitch-vod-ai-editor` (private), which is this
-same pipeline plus the cut and the model that decides it. The two were split on 2026-08-18
-because they are meant for different jobs, not because either is a draft of the other:
-this one hands over footage to cut by hand, that one makes a first pass at the cut. **The
-shared machinery is identical in both — capture, chunking, remux, proxies, rolling ASR,
-rundowns, snapshots, the VOD path, the network proxy — so a fix to any of it belongs in
-both repositories.**
+then retracted on 2026-08-17 by a deliberate product decision — see the note below. It now lives in
+a separate, unpublished repository: this same pipeline plus the cut and the model that
+decides it. The two were split on 2026-08-18 because they are meant for different jobs,
+not because either is a draft of the other: this one hands over footage to cut by hand,
+that one makes a first pass at the cut. **This repository is the maintained one**, and it
+is the whole pipeline minus the cut.
 
 Status: **built, audited, hardened, and proven against real 8-hour recordings** -- three
 live tests, each of which found defects no fixture could have. Two audits
@@ -25,7 +23,7 @@ and `test_confirmed_audit_fixes.py` are what they left behind); every finding wa
 and closed or confirmed already-handled. The full suite is
 `python -m unittest discover -s tests -t .`. See `README.md` for operation and rationale.
 
-**First live test, 2026-08-16 (hasanabi, 4 chunks, ~7 hours).** Capture, chunking, remux
+**First live test, 2026-08-16 (examplechannel, 4 chunks, ~7 hours).** Capture, chunking, remux
 and masters were flawless. Four defects surfaced that no fixture could have caught, all
 fixed and locked in by `tests/test_live_failures_20260816.py` plus additions to
 `test_media_asr_coverage_contracts.py` and `test_confirmed_audit_fixes.py`. Each is written
@@ -40,7 +38,7 @@ in this codebase:
 | `needs about 319.3 GB above the 10.0 GB reserve` | proxy reservation bounded video at *uncompressed* size | every proxy refused; the one that ran was 538 MB |
 | `rundown failed: resource is owned by another process` | the proxy encode held the chunk transcript-mutation lock for its whole run | the only complete transcript lost its rundown |
 
-**Second live test, same day (zy0xxx, and the hasanabi backlog).** All four hasanabi
+**Second live test, same day (otherchannel, and the examplechannel backlog).** All four examplechannel
 chunks reached complete masters, proxies and transcripts. Three further defects, all
 fixed and covered by `tests/test_live_failures_20260816.py`:
 
@@ -50,7 +48,7 @@ fixed and covered by `tests/test_live_failures_20260816.py`:
 | `claude -p failed (1):` — nothing after the colon | detail read stderr only; a `--print` CLI explains itself on stdout | the one diagnostic message carried no information |
 | a rundown lost to one transient engine failure | the CLI transport had no retry while the API transport had four | c000's rundown was permanently `error` |
 
-**Third live test, 2026-08-18 (hasanabi ~7h, then zy0xxx ~7h, 8 chunks).** Capture and
+**Third live test, 2026-08-18 (examplechannel ~7h, then otherchannel ~7h, 8 chunks).** Capture and
 transcription were flawless across both sessions -- 8 chunks, ~110,000 words, every seam
 stitched. Three defects, all in what happens to a chunk *after* it closes, and every one
 of them reported as something it was not. Fixed and locked in by
@@ -60,13 +58,13 @@ of them reported as something it was not. Fixed and locked in by
 |---|---|---|
 | `remux failed: Assertion next_dts <= 0x7fffffff failed at movenc.c:1236` | one sample's duration overflowed a 32-bit field, i.e. a DTS gap of >6h inside a 2h file; **not reproducible** -- re-running the identical command over the identical bytes now produces a perfect master | c002 kept only a `.ts`; its proxy then failed with "master is missing" |
 | `h264_amf failed on real media (covers 2765s but expected 7202s)` ×2 chunks ×2 encoders | the *master* was damaged, not the encoder: one `stsc` entry misaddressed every sample after it, one `co64` entry had a stray high bit and the demuxer stopped dead at 44% | 2 masters silently corrupt, their `.ts` already deleted; 20 minutes spent proving libx264 could not read them either |
-| `claude -p failed (1): You've hit your session limit · resets 6:10am` ×3 | the only engines on offer were the user's Claude subscription and an Anthropic key | c000's rundown lost; nothing to fall back to. The pluggable engine this produced was itself withdrawn on 2026-08-19 -- see the engine note below |
+| `claude -p failed (1): You've hit your session limit · resets 6:10am` ×3 | the only engines on offer were a Claude Code subscription and an Anthropic key | c000's rundown lost; nothing to fall back to. The pluggable engine this produced was itself withdrawn on 2026-08-19 -- see the engine note below |
 
 **The corruption itself is unexplained and precisely characterised.** Both bad masters
 carry byte-level damage in the `moov`, in different tables, hours apart, from a process
 whose input was provably clean (streamlink logged zero sequence gaps and zero ad breaks
-across the whole recording; the surviving `.ts` re-remuxes perfectly today). zy0xxx c001's
-`co64[136075]` reads `2**45 + 3242408537` -- a **single flipped bit**. zy0xxx c000's
+across the whole recording; the surviving `.ts` re-remuxes perfectly today). otherchannel c001's
+`co64[136075]` reads `2**45 + 3242408537` -- a **single flipped bit**. otherchannel c000's
 `stsc[47056].first_chunk` reads `8192` where `59839` belongs. Five other masters from the
 same two sessions are perfect. No WHEA, disk or NTFS errors are logged, which is expected:
 non-ECC memory does not report a flip. **Do not go looking for a logic bug in the muxer to
@@ -74,17 +72,17 @@ explain this** -- a logic bug is systematic, and this is one wrong value in 310,
 recurs, run a memory test before reading any more code. What the pipeline can do about it
 is detect it, which is what it now does.
 
-**Editing the output in Premiere, 2026-08-17.** The user imported a finished chunk and
-found the one feature that does not work: *delete all fillers* reported nothing to delete
-against a transcript carrying 397 valid `filler` tags. Filler tagging was **cancelled** —
-the user's call, and the right one; see the `tags` note below. `IMPORT.md` was dropped in
+**Editing the output in Premiere, 2026-08-17.** A finished chunk was imported into
+Premiere, and one feature did not work: *delete all fillers* reported nothing to delete
+against a transcript carrying 397 valid `filler` tags. Filler tagging was **cancelled**
+rather than debugged further; see the `tags` note below. `IMPORT.md` was dropped in
 the same pass as bloat. Together this removed two modules (`fillers.py`, `review.py`,
 ~1,400 lines), a job type, seven config keys and three published files per chunk.
 
-**The edited cut: built, then retracted, 2026-08-17.** The user asked for the pipeline to
-do the editing itself, and then — having seen it work — asked for it to be taken back out
-and for the tool to be the recorder and transcriber it started as. Both are the right call
-and neither cancels the other:
+**The edited cut: built, then retracted, 2026-08-17.** The pipeline was extended to do
+the editing itself, and then — having seen it work — the feature was taken back out so the
+tool would stay the recorder and transcriber it started as. Both decisions were right and
+neither cancels the other:
 
 - it *worked*. On the reference chunk it took 58:52 to 46:15, clipped none of its 8,022
   words, and its 478 joins measured quieter than ordinary speech (median single-sample
@@ -94,17 +92,18 @@ and neither cancels the other:
   part of editing that is slow, and it cost forty minutes of encoding and several GB per
   chunk for a derivative one generation removed from a stream copy.
 
-The work is not lost: **`edit.py`, `audio.py`, `render.py` and the model-decided
-`aiedit.py` live in `github.com/MrBeldum/twitch-vod-ai-editor`**, with their tests and
-their measurements. This repository is the core pipeline.
+The work is not lost — `edit.py`, `audio.py`, `render.py` and the model-decided
+`aiedit.py` were kept, with their tests and their measurements, in the separate editor
+repository. **This repository is the core pipeline**, and the notes below are written
+for it.
 
 **What the retraction had to get right** is the part worth reading before removing
 anything else from this codebase. Two readers here are deliberately strict, and both would
 have turned "delete the feature" into "the application will not start on the machine that
 had it":
 
-- `schema._walk` raises on an unknown config path. The `edit.*` keys are in the user's
-  installed `config.json`. Retiring the **section** (`"edit"` in `RETIRED_PATHS`) rather
+- `schema._walk` raises on an unknown config path. The `edit.*` keys are present in any
+  `config.json` installed while the feature existed. Retiring the **section** (`"edit"` in `RETIRED_PATHS`) rather
   than its thirty keys individually is what works — `_walk` only recurses into a branch
   that still has a rule underneath it, so once the last `edit.*` rule went the *container*
   became unknown and retiring the keys one by one did not help. Retiring the section also
@@ -208,7 +207,7 @@ Implementation notes worth knowing before changing anything:
   the audio for that (`timestamp discontinuity … new offset=`) but the id3 stream gets no
   such correction, so its DTS runs backwards, the segment muxer refuses it —
   `Application provided invalid, non monotonically increasing dts to muxer in stream 2` —
-  and ffmpeg dies with -22, ending the recording. A live zy0xxx capture died this way
+  and ffmpeg dies with -22, ending the recording. A live otherchannel capture died this way
   three times in fifteen minutes. The stream was never wanted: `plan_remux_maps` already
   dropped it at remux, and settled decision (the 2026-08-13 ad correction) rules out
   reading Twitch metadata anyway. Verified by A/B capture against the live channel:
@@ -230,8 +229,9 @@ Implementation notes worth knowing before changing anything:
   - **`summary.provider` is a retired *value*, not a retired path,** so `RETIRED_PATHS`
     does not reach it. An installed `config.json` naming a removed engine is rewritten to
     `claude-cli` by `schema._summary_provider`/`RETIRED_PROVIDERS` rather than refused --
-    the user's own file said `kimi-api` the day before, and refusing it would be exactly
-    the "will not start on the machine that had it" failure retirement exists to prevent.
+    an installed file could name `kimi-api` from the day before, and refusing it would be
+    exactly the "will not start on the machine that had it" failure retirement exists to
+    prevent.
     Rewriting is only safe because the engines were interchangeable: same prompt, same
     kind of answer. Do not copy this for a setting whose values mean different outcomes.
   - **`summary.base_url`, `summary.cli_command` and the five API keys are retired keys,**
@@ -266,7 +266,7 @@ Implementation notes worth knowing before changing anything:
   palette had passed at 4.75:1, so the restyle regressed it silently; nothing
   in a screenshot says "2.91". `tests/test_ui_contract.py::PaletteContrastTests`
   now computes the ratios straight out of `style.css`, so a palette re-picked by
-  eye fails the suite instead of the user. Two known gaps are recorded as
+  eye fails the suite instead of shipping. Two known gaps are recorded as
   accepted debt in `DESIGN.md` rather than quietly fixed: there is no focus trap
   on the drawer (it claimed one until the 2026-08-25 audit), and `--line`
   hairlines sit near 1.3:1, so an unfocused input is delimited by little more
@@ -274,7 +274,7 @@ Implementation notes worth knowing before changing anything:
 - **A rundown engine gets more than one attempt** (`summary.max_retries`, default 3,
   bounded by `summary.timeout_seconds` overall). *Added 2026-08-16.* An API transport that
   briefly lived next door retried and the `claude -p` transport did not, which was
-  backwards: the CLI is the only provider and the one sharing the user's subscription
+  backwards: the CLI is the only provider and the one sharing an interactive subscription
   quota, the transient this project has always expected. One blip lost a rundown permanently. A non-zero CLI exit is
   not classifiable from outside — a rate limit, a dropped connection and a bad flag look
   identical — so the retry is unconditional and bounded by the deadline the single attempt
@@ -314,7 +314,7 @@ Implementation notes worth knowing before changing anything:
 - **A failed remux is tried again** (`recording.remux_attempts`, default 3). The
   precedent is the `claude -p` retry: a failure that cannot be classified from out here is
   still worth repeating when repeating it is bounded and the alternative is losing the
-  artifact permanently. The proof it was worth adding is that hasanabi c002's assertion
+  artifact permanently. The proof it was worth adding is that examplechannel c002's assertion
   does not reproduce -- the same command over the same bytes succeeds now, so a second
   attempt would have saved the master on the night. Each attempt stages its own
   `.partial.mp4`, so nothing is carried between them.
@@ -419,13 +419,12 @@ Implementation notes worth knowing before changing anything:
   was wrong — Adobe's language list is a *closed enum* and the schema is
   `additionalProperties: false`, so `zh-cn`/`fi-fi`/`uk-ua`/`en-au` were not unfamiliar
   tags but invalid files.
-- **The edited cut's implementation notes moved with it, to `twitch-vod-ai-editor`.**
-  Everything learned building it is in that repo's `CLAUDE.md`: the acoustics-propose/transcript-
-  vetoes rule, the outward-only snap, deriving audio sample counts from video frame
-  counts, clamping the plan to the frames that exist, the balanced `select` tree, the
-  disk estimator anchored on the master's own size. If the cut is ever revived, read
-  those before touching anything — most of them were paid for with a real failure.
-  Two of its lessons stayed here because they are not about editing:
+- **The edited cut's implementation notes moved out with it.** What was learned building
+  it — the acoustics-propose/transcript-vetoes rule, the outward-only snap, deriving audio
+  sample counts from video frame counts, clamping the plan to the frames that exist, the
+  balanced `select` tree, the disk estimator anchored on the master's own size — is not
+  reproduced here, because none of it is reachable from this codebase. Two of its lessons
+  stayed because they are not about editing:
   - **`words_json_text` validates its own output before returning it.** The remap that
     fed the edited transcript produced words that stepped backwards by one video frame,
     and `write_exports` wrote a `words.json` that `load_words` then refused. A writer and
@@ -436,12 +435,13 @@ Implementation notes worth knowing before changing anything:
     82 GB for a 13 GB edit. A reservation the drive cannot meet does not protect the
     disk, it turns the feature off.
 - **`profanity` is the only `tags` value we emit. Filler tagging is removed — do not
-  reinstate it.** *2026-08-17, on the user's report.* Adobe's enum allows `profanity` and
-  `filler`; we wrote both, and the user's Premiere reported **"no filler words detected"**
+  reinstate it.** *2026-08-17, confirmed against a real Premiere install.* Adobe's enum
+  allows `profanity` and `filler`; we wrote both, and Premiere reported **"no filler words
+  detected"**
   against a `premiere.json` carrying 397 `filler` tags on a valid, importable, correctly
   attached transcript. The tag is documented and schema-legal, so the reason it is ignored
-  is inside Premiere and not observable from here. The user's decision was to cancel the
-  feature rather than keep debugging it, and independently: *delete all fillers* cuts on
+  is inside Premiere and not observable from here. The decision was to cancel the feature
+  rather than keep debugging it, and independently: *delete all fillers* cuts on
   word boundaries, which is audible on a hesitation running into the next word, and one
   wrong verdict in a thousand deletes real speech with no review step. `fillers.py`
   (a tagger with `sounds`/`smart`/`aggressive` modes) and `review.py` (an optional
@@ -452,12 +452,12 @@ Implementation notes worth knowing before changing anything:
   It is also a required field of the strictly validated `asr_identity`, so removing it
   would invalidate every existing `words.json`.
 - **Retiring a config key needs `schema.RETIRED_PATHS`, not just a `SCHEMA` deletion.**
-  `_walk` raises on any unknown path, so deleting a key that is present in the user's
+  `_walk` raises on any unknown path, so deleting a key that is present in an already
   installed `config.json` makes the application refuse to start — the exact failure the
   transactional validator exists to prevent. Retired paths are dropped on load and gone
   from the file after the next save.
-- **A chunk folder holds only what you open; `source/` holds the rest.** *2026-08-18, at
-  the user's request for a cleaner layout.* `premiere.json`, `rundown.md`,
+- **A chunk folder holds only what you open; `source/` holds the rest.** *2026-08-18, for
+  a cleaner layout.* `premiere.json`, `rundown.md`,
   `transcript.srt` and `censor-words.txt` sit in `transcripts/<chunk>/`; `words.json`,
   `transcript.json`, `transcript.txt`, `exports.json` and `deepgram/` sit in
   `transcripts/<chunk>/source/`. The split is by *how often a person opens the file*, not
@@ -513,7 +513,7 @@ Implementation notes worth knowing before changing anything:
   stay owned and are never rendered, which deletes them on the next publish. Recovery
   reaches that publish on its own: an old manifest declares the retired file, `declared`
   is then not a subset of `canonical_names`, `publication_is_consistent` returns False,
-  and `_recover_artifacts` republishes. Verified on the real 16,867-word hasanabi c000:
+  and `_recover_artifacts` republishes. Verified on the real 16,867-word examplechannel c000:
   files removed, 397 filler tags gone, 74 profanity tags kept, 73 "uh"/"um" still present
   as words, **generation id unchanged** — which is what keeps the existing rundowns.
 - **Adobe's schema is checked into `reference/`,** taken from the spec they attach to the
@@ -545,28 +545,40 @@ Implementation notes worth knowing before changing anything:
 | 4 | Control surface | **Local web dashboard** on localhost. |
 | 5 | Summary style | **Editor report.** Written from the angle of an editor cutting Twitch into YouTube (long-form and Shorts): timeline, best moments, skip list, titles. Chat evidence is used for what *landed*, the transcript for what was *said*. The 2026-08-19 "objective rundown only" constraint was withdrawn for this deliverable. |
 | 6 | Summary engine | **`claude -p` (Claude Code) or `grok -p` (Grok 4.6 by default).** Paid HTTP APIs (Anthropic/Kimi/DeepSeek/OpenAI) were added 2026-08-18 and removed 2026-08-19 after they failed on the ordinary case. Do not re-add a paid API; a second subscription CLI is the shape that works. `none` switches reports off. Do not pass `-m grok-build` — the CLI rejects it. |
-| 7 | Channels | **Arbitrary, user-added at runtime. Do not hardcode any channel.** User said "various streamers, don't assume which." |
+| 7 | Channels | **Arbitrary, added at runtime. Do not hardcode any channel.** The tool is not written for a particular streamer, and no channel name belongs in the source. |
 | 8 | Storage | Masters → Desktop, kept until manually cleared. Proxies → auto-deleted after 1 day. All adjustable. |
-| 9 | Language | Python for new code. The retired C# predecessor is archived privately at `github.com/MrBeldum/vod-transcript`. |
-| 10 | Automatic editing | **None.** Built 2026-08-17 and retracted the same day at the user's request: it worked, and it was still the wrong deliverable — an automatic cut has to be checked, and checking it means watching it. This repository records and transcribes. The cut lives in `github.com/MrBeldum/twitch-vod-ai-editor`. |
+| 9 | Language | Python for new code. A retired C#/.NET predecessor exists but is not published. |
+| 10 | Automatic editing | **None.** Built 2026-08-17 and retracted the same day: it worked, and it was still the wrong deliverable — an automatic cut has to be checked, and checking it means watching it. This repository records and transcribes. |
 | 11 | Filler removal | **Manual, from a verbatim transcript.** Adobe's `filler` tag is not emitted (Premiere ignored it), and nothing here removes fillers from the media. `transcription.filler_words` stays on so every one is in the transcript and easy to find. |
 
 ---
 
-## Verified environment
+## Target environment
 
-Checked 2026-08-13. Re-verify if the machine changed.
+The pipeline is developed and proven on **Windows 11** with **Python 3.14**, and the
+packaging (`VODPipeline.exe`, Start Menu registration, the Chromium app window) is
+Windows-specific. The Python core is portable; nothing outside `winapp.py`, `app.py` and
+`packaging/` assumes Windows.
 
-- Windows 11 Home 10.0.26200. PowerShell is primary; a Bash tool exists but takes POSIX syntax.
-- Ryzen 5 5600 (6c/12t), 32 GB RAM.
-- **AMD Radeon RX 6600, 8 GB — no CUDA, no NVIDIA.** This is the reason local Whisper cannot hit 20x realtime and the reason ASR is cloud.
-- **Single drive, C:, 191 GB free at time of check.** Masters land on the Desktop, which is on C:. At ~7 GB/hr for 1080p60 that is roughly 27 hours of headroom before proxies.
-- `streamlink` **8.4.0** → `C:\Users\Daniel\AppData\Local\Programs\Streamlink\bin\streamlink.exe`
-- `ffmpeg` / `ffprobe` → `C:\ffmpeg\bin\`
-- `python` **3.14.6** → `C:\Python314\python.exe` — very new; keep dependencies minimal.
-- `node` → `C:\Program Files\nodejs\node.exe`
-- `claude.exe` → `C:\Users\Daniel\.local\bin\claude.exe`, authenticated against the user's subscription.
-- `yt-dlp` **2026.07.04** → `C:\Users\Daniel\Tools\yt-dlp\bin\yt-dlp.exe`, on the user PATH. Its media library is `C:\Users\Daniel\Videos\yt-dlp`.
+Required on `PATH` (or set explicitly under `tools.*` in `config.json`):
+
+- **`streamlink` 8.4+** — capture and VOD download. Older versions differ in
+  `--http-proxy` coverage and still expose `--twitch-disable-ads`, which shaped
+  decisions recorded below.
+- **`ffmpeg` / `ffprobe`** — segmenting, remux, proxies, audio slicing, verification.
+- **`python` 3.14** — no third-party packages, so no wheel-availability problem on a
+  Python this new. Keep it that way.
+- Optional: **`claude`** (Claude Code) and/or **`grok`** (Grok Build) for editor reports.
+
+Hardware notes that shaped the design rather than requirements:
+
+- **ASR is cloud partly because the reference machine has no CUDA.** On an AMD GPU a
+  local Whisper cannot reach the throughput rolling transcription needs, and Deepgram
+  returns word-level timings anyway, which deletes the forced-alignment stage entirely.
+- **Proxies prefer a hardware encoder** (`h264_amf` on AMD) behind a runtime probe, with
+  a `libx264` fallback, so a machine without one still works — just slower.
+- **Assume a single drive.** Masters at ~7 GB/hr for 1080p60 fill a disk quickly; the
+  free-space floor and the reservation logic below exist because of that.
 
 ---
 
@@ -617,25 +629,25 @@ Premiere does not scan a transcript for "uh"; it reads the `filler` tag on each 
 Adobe's note that "if you've previously transcribed a clip you'll need to re-transcribe to
 add filler words to it" says the tags are attached when the transcript is made. Ours were
 attached at export time, so `republish` could add them without touching Deepgram. It made
-no difference: the user's Premiere found none of them. The feature is gone; see the
+no difference: Premiere found none of them. The feature is gone; see the
 `tags` note above before considering it again.
 
 ---
 
-## Historical `vod-transcript` source
+## Lessons from the retired predecessor
 
-The retired C#/.NET 8 predecessor is archived privately at
-`https://github.com/MrBeldum/vod-transcript`; it is no longer installed locally. It used
-Whisper large-v3-turbo over Vulkan plus Wav2Vec2 CTC alignment over DirectML. Its README
-is the reference if any historical implementation detail is needed.
+A C#/.NET 8 predecessor did the same job locally, with Whisper large-v3-turbo over Vulkan
+plus Wav2Vec2 CTC alignment over DirectML. It is not published, and nothing here depends
+on it; what mattered is why it was replaced.
 
-**Port these:**
-- The `premiere.json` Static Transcript exporter — schema and the rule that starts a new
-  speech segment at every pause longer than 0.4s so pauses stay visible to text-based editing.
-- The censor-word output. Feed it from the user's existing curated master list at
-  `C:\Users\Daniel\Desktop\censored_words_master.txt` rather than regenerating one.
+**Carried forward:**
+- The `premiere.json` Static Transcript exporter — the schema, and the rule that starts a
+  new speech segment at every pause longer than 0.4s so pauses stay visible to text-based
+  editing.
+- The censor-word output. It is fed from a curated master word list you supply
+  (`paths.censor_master_list`) rather than regenerating one per recording.
 
-**Do not port:**
+**Deliberately dropped:**
 - Beam-5 Whisper decoding.
 - The Wav2Vec2 CTC forced-alignment stage.
 - The retry/escalation ladder built around them.
@@ -663,7 +675,7 @@ These three are exactly what made it too slow, and cloud word timings make all o
   not 6+. Snapshots should come back in seconds.
 - **The pipeline is file-based** — it writes files Premiere imports. It does not need the
   Premiere or After Effects MCP servers, both of which are currently disabled.
-- **`claude -p` shares the user's subscription usage limits.** A heavy recording day could
+- **`claude -p` shares your Claude subscription usage limits.** A heavy recording day can
   bump into them. Buying a way around that was tried and withdrawn (see the engine note
   above); a rundown lost to a limit is re-queued from the dashboard once it resets, and
   the transcript it is built from was never at risk.

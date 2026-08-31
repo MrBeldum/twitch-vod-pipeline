@@ -1,4 +1,24 @@
-# Twitch VOD → Premiere Pipeline
+<p align="center">
+  <img src="docs/logo.png" alt="VOD Pipeline" width="120" height="120">
+</p>
+
+<h1 align="center">Twitch VOD → Premiere Pipeline</h1>
+
+<p align="center">
+  <b>Record a Twitch stream. Get back a Premiere-ready master, a proxy, and a
+  word-timed transcript you can cut from.</b>
+</p>
+
+<p align="center">
+  <a href="https://github.com/MrBeldum/twitch-vod-pipeline/actions/workflows/ci.yml"><img src="https://github.com/MrBeldum/twitch-vod-pipeline/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT licensed"></a>
+  <a href="https://github.com/MrBeldum/twitch-vod-pipeline/releases/latest"><img src="https://img.shields.io/github/v/release/MrBeldum/twitch-vod-pipeline?label=release" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-3776ab.svg" alt="Python 3.12+">
+  <img src="https://img.shields.io/badge/dependencies-none-success.svg" alt="No dependencies">
+  <img src="https://img.shields.io/badge/platform-Windows-0078d4.svg" alt="Windows">
+</p>
+
+---
 
 Records Twitch streams live in chunks — or downloads a past VOD through the identical
 pipeline — and hands you everything you need to start editing:
@@ -15,16 +35,34 @@ pipeline — and hands you everything you need to start editing:
 - a **censor list** of the terms from your master list that actually occur.
 
 You can also pull any range out of a broadcast while it is still recording, and route
-everything through an HTTP/SOCKS proxy to reach Twitch from a region it has left (such as
-South Korea).
+everything through an HTTP/SOCKS proxy to reach Twitch from a region it has withdrawn from.
 
 It records and it transcribes. **It does not cut**: no automatic edit, no decisions made
 on your behalf about what to remove. What it gives you is a clean master and a transcript
 good enough to cut from.
 
-Pure Python 3.14 standard library — no pip install, no virtualenv, no wheels to build.
-External binaries only: `ffmpeg`, `ffprobe`, `streamlink`, and optionally `claude`
-(Claude Code) and/or `grok` (Grok Build) for the editor report.
+## Requirements
+
+| | | |
+|---|---|---|
+| **Python 3.12+** | required | Standard library only — no `pip install`, no virtualenv, no wheels to build. |
+| **ffmpeg / ffprobe** | required | Segmenting, remux, proxies, audio extraction, master verification. |
+| **streamlink 8.4+** | required | Live capture and VOD download. |
+| **A Deepgram API key** | for transcripts | Everything downstream of the master derives from it. |
+| **`claude` or `grok` CLI** | for reports | Optional. Uses a subscription you already have; no API key. |
+| **A Twitch OAuth token** | optional | Enables the ad-free path if you have Turbo. |
+
+Windows is the supported and tested platform. `python -m vodpipe doctor` tells you what it
+can find and what is missing.
+
+## Contents
+
+- [Quick start](#quick-start) · [What lands on disk](#what-lands-on-disk) · [Downloading a past VOD](#downloading-a-past-vod)
+- [Getting it into Premiere](#getting-it-into-premiere) — **read this if a transcript "does not work"**
+- [What you get, and what you do with it](#what-you-get-and-what-you-do-with-it) · [How it works, and why](#how-it-works-and-why)
+- [Ads](#ads) · [Why a recording can be 720p](#why-a-recording-can-be-720p) · [Recording from a withheld-source region](#recording-from-a-withheld-source-region)
+- [Disk safety](#disk-safety) · [Configuration](#configuration) · [Tests](#tests) · [Layout](#layout)
+- [Reliability behaviour](#reliability-behaviour) · [Known limits](#known-limits) · [Contributing](#contributing) · [License](#license)
 
 ---
 
@@ -145,8 +183,8 @@ channel's folder beside its live recordings; if the name can't be resolved it fa
 recording of the same channel — or two different VODs — can run at once, and the same VOD
 cannot be downloaded twice concurrently. A VOD that Twitch will not serve (deleted,
 subscriber-only, or geo-blocked with no proxy set) is refused up front rather than left as
-an empty session; set `network.proxy` for the geo-blocked case (see *Recording from South
-Korea*).
+an empty session; set `network.proxy` for the geo-blocked case (see *Recording from a
+withheld-source region*).
 
 ---
 
@@ -261,8 +299,8 @@ turn it off with `transcription.keep_raw_responses` if you would rather not have
 
 An earlier version of this tool cut a second copy of every chunk with the silences,
 fillers and false starts removed. It worked — measured on a real chunk it took 58:52 down
-to 46:15, it never clipped a word, and its joins did not click. It was **removed on the
-operator's decision**, and the reasoning is worth keeping:
+to 46:15, it never clipped a word, and its joins did not click. It was **removed deliberately**, and
+the reasoning is worth keeping:
 
 - an automatic cut has to be *checked*, and checking a 46-minute file means watching it;
 - the cost is real and permanent — forty minutes of encoding and several gigabytes per
@@ -272,8 +310,9 @@ operator's decision**, and the reasoning is worth keeping:
 
 What survives is the part that was actually useful: a **verbatim** transcript, with the
 hesitations in it, timed to the word, so a cut you make lands where you expect it to.
-If you want the automatic cut, it is a separate tool: `MrBeldum/twitch-vod-ai-editor` is
-this same pipeline with the cut still in it, decided by a language model.
+If you want an automatic cut, that lives in a separate, unpublished tool — this same
+pipeline with the cut still in it, decided by a language model. It is not part of this
+project and is not on the roadmap for it.
 
 ## How it works, and why
 
@@ -452,7 +491,8 @@ themselves, not from log lines about segments that were already discarded.
 
 This one cost four two-hour masters before it was noticed, so it is documented in full.
 
-A `hasanabi` session recorded on 2026-08-13 produced four chunks at **1280×720**. The
+A session recorded on 2026-08-13 from a large English-language channel produced four
+chunks at **1280×720**. The
 pipeline was configured with `quality: "best"` and did exactly the right thing — the
 ladder Twitch served simply had nothing better on it. From the session's own
 `logs/streamlink.log`:
@@ -474,11 +514,12 @@ a channel is on then decides the ceiling:
 
 | Channel | `TRANSCODESTACK` | Best offered from a KR IP |
 |---|---|---|
-| `xqc`, `caseoh_`, `hasanabi` | `2025-Transcode-ELT-V1` | **720p60** |
-| `summit1g`, `otplol_` | `Custom:1_Source_Max_1440p60…:5_Transcode_Max_1080p60…` | 1080p60 |
+| Several of the largest channels | `2025-Transcode-ELT-V1` | **720p60** |
+| Others | `Custom:1_Source_Max_1440p60…:5_Transcode_Max_1080p60…` | 1080p60 |
 
 That second row is why the cap is easy to misdiagnose: some channels *do* reach 1080p60
-from Korea, so a spot check on the wrong channel suggests everything is fine.
+from an affected region, so a spot check on the wrong channel suggests everything is
+fine.
 
 Things that were tested and made **no** difference:
 
@@ -489,9 +530,9 @@ Things that were tested and made **no** difference:
   cause, and that warning appears nowhere in 43,000 lines of the session log.
 - Being a RERUN. Twitch does cap reruns, but these were genuine live broadcasts.
 
-**So: to record at source quality from Korea, route Twitch through another region** — either
-a full VPN or the built-in `network.proxy` setting (an HTTP/SOCKS proxy applied to every
-streamlink call; see *Recording from South Korea*). A Twitch OAuth token is still worth
+**So: to record at source quality from an affected region, route Twitch through another
+one** — either a full VPN or the built-in `network.proxy` setting (an HTTP/SOCKS proxy
+applied to every streamlink call; see *Recording from a withheld-source region*). A Twitch OAuth token is still worth
 setting for ad avoidance, but it is not what gates resolution.
 
 **What the pipeline does about it now.** It can't raise a ceiling Twitch imposes, but it
@@ -513,13 +554,14 @@ will never let one pass silently again:
 
 ---
 
-## Recording from South Korea
+## Recording from a withheld-source region
 
-Twitch shut its Korean operations down in February 2024. From a Korean IP Twitch withholds
-the `source` rendition on every channel, so the best you can record is whatever transcode
-the channel happens to have — 720p60 on many large channels. The full evidence is in "Why a
-recording can be 720p" above. There are two ways to get back to source quality, and both
-work for live capture *and* VOD downloads:
+Twitch withholds the `source` rendition from IPs in some countries it no longer operates
+in. **South Korea, which it left in February 2024, is the documented case**, and the one
+the evidence below was gathered from. From such an IP the best you can record is whatever
+transcode the channel happens to have — 720p60 on many large channels. The full evidence
+is in "Why a recording can be 720p" above. There are two ways to get back to source
+quality, and both work for live capture *and* VOD downloads:
 
 **A network proxy (`network.proxy`) — the light-weight option.** Set an HTTP or SOCKS proxy
 in Settings (or `config.json`) and every streamlink request — live capture, VOD download,
@@ -536,12 +578,13 @@ Prefer `socks5h://` for a SOCKS proxy so DNS is resolved on the proxy side too. 
 doctor` prints whether a proxy is configured. A proxy endpoint that cannot sustain the
 throughput below shows up as buffering, not an error.
 
-**A full VPN — the heavy option.** A VPN to Japan was confirmed on 2026-08-14 to restore
-source quality (1080p60). It routes the whole machine and needs no pipeline setting.
+**A full VPN — the heavy option.** A VPN endpoint in an unaffected region (Japan was the
+one tested, on 2026-08-14) restores source quality at 1080p60. It routes the whole machine
+and needs no pipeline setting.
 
-This corrects an earlier claim in this file, which said capture worked at full quality
-from Korea without a VPN. It does not. That conclusion came from spot-checking channels
-that happened to have a 1080p60 *transcode*, which masked the missing source rendition.
+An earlier version of this file claimed capture worked at full quality from an affected
+region without either. It does not. That conclusion came from spot-checking channels that
+happened to have a 1080p60 *transcode*, which masked the missing source rendition.
 
 Everything else is geography-neutral: Deepgram is reachable globally, `claude -p` runs
 locally against your subscription, and the dashboard is loopback-only. Two things to
@@ -554,8 +597,9 @@ keep in mind when recording over a VPN:
   ending the session. The startup watchdog only fires when *zero* bytes have ever
   arrived, so it will not kill a recording that has already started.
 
-Twitch Turbo remains the pipeline's only ad avoidance, and a Korean billing address may
-affect buying it. That costs coverage at ad breaks, not resolution. See the Ads section.
+Twitch Turbo remains the pipeline's only ad avoidance, and a billing address in a region
+Twitch has withdrawn from may affect buying it. That costs coverage at ad breaks, not
+resolution. See the Ads section.
 
 Re-check with `streamlink https://twitch.tv/<a live channel>` if Twitch's regional
 behaviour changes; look at whether the ladder reaches source quality, not just at whether
@@ -750,8 +794,7 @@ What happens when things go wrong, since a recorder is judged on its bad days:
   nothing. Premiere ignored the tags when they were written; see the Premiere section.
 - **Nothing is cut for you.** No silence removal, no filler removal, no censoring of the
   media — the censor list is a list, and Premiere does the censoring. This build
-  produces a master and the material to edit it with, and stops there. The automatic
-  cut is a separate tool, `MrBeldum/twitch-vod-ai-editor`.
+  produces a master and the material to edit it with, and stops there.
 - The rundown is only as good as the transcript. Crosstalk, music and heavy accents all
   degrade it, and the prompt instructs the model to say so rather than guess.
 - `claude -p` shares your subscription usage limits.
@@ -760,3 +803,31 @@ What happens when things go wrong, since a recorder is judged on its bad days:
 - The dashboard has no authentication and therefore refuses to bind anywhere but
   loopback. It checks `Origin`/`Host` and requires JSON content type, which stops a
   malicious web page driving it, but anyone with an account on this machine can use it.
+
+---
+
+## Contributing
+
+Contributions are welcome. Start with **[CONTRIBUTING.md](CONTRIBUTING.md)** — it covers
+the setup (there is almost none), how to run the suite, and the three failure modes this
+codebase actually has.
+
+Two documents are worth reading before proposing a change:
+
+- **[`CLAUDE.md`](CLAUDE.md)** is the project's engineering memory. Every non-obvious
+  decision is recorded there with the failure that caused it, including several features
+  that were built and then deliberately removed. Most "obvious improvements" have already
+  been tried and are written up with the reason they were reverted.
+- **[`DESIGN.md`](DESIGN.md)** is the dashboard's design system. The palette is
+  contrast-tested in CI, so a colour picked by eye will fail the suite.
+
+Please report security issues privately — see [SECURITY.md](SECURITY.md). By taking part
+you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## License
+
+[MIT](LICENSE). Use it, change it, ship it.
+
+This project drives `ffmpeg`, `streamlink` and Deepgram; each carries its own licence and
+terms, and recording a broadcast is your responsibility under Twitch's terms and the law
+where you are.

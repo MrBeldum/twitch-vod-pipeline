@@ -85,7 +85,7 @@ def segment_command(
     segment muxer refuses it --
     ``Application provided invalid, non monotonically increasing dts to muxer in
     stream 2`` -- and ffmpeg aborts with -22, killing the recording. A live
-    zy0xxx capture died this way three times in fifteen minutes.
+    otherchannel capture died this way three times in fifteen minutes.
 
     The stream was never wanted: `plan_remux_maps` already drops it because MP4
     cannot carry it and it holds nothing editorial, and settled decision (the ad

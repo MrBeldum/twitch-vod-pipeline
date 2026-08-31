@@ -18,7 +18,7 @@ using Microsoft.Win32;
 [assembly: AssemblyProduct("VOD Pipeline")]
 [assembly: AssemblyDescription("Twitch VOD to Premiere pipeline")]
 [assembly: AssemblyCompany("MrBeldum")]
-[assembly: AssemblyCopyright("MrBeldum")]
+[assembly: AssemblyCopyright("Copyright (c) 2026 MrBeldum. MIT licensed.")]
 [assembly: AssemblyVersion("1.0.0.0")]
 [assembly: AssemblyFileVersion("1.0.0.0")]
 [assembly: AssemblyInformationalVersion("1.0.0")]
