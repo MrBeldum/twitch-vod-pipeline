@@ -406,7 +406,7 @@ and rundowns are heavy but disposable and get another. Snapshots are user-initia
 get a third. With a single FIFO, a quarter-hour `claude -p` call could sit in front of the
 transcript slice for a channel that was still recording.
 
-**Proxies** are hardware-encoded via `h264_amf` on the RX 6600 when it is available —
+**Proxies** are hardware-encoded via `h264_amf` on an AMD GPU when one is available —
 verified by actually encoding two seconds of test pattern, because a build listing an
 encoder does not prove the GPU accepts it — and fall back to `libx264` otherwise.
 

@@ -36,11 +36,11 @@ from vodpipe.state import Session, SessionStore
 from vodpipe.util import Tools
 
 # Verbatim from the recording that exposed the problem.
-HASANABI_LADDER = (
+CAPPED_LADDER = (
     "[cli][info] Available streams: audio_only, 160p (worst), 360p, 480p, "
     "720p60 (best)"
 )
-HASANABI_OPENING = "[cli][info] Opening stream: 720p60 (hls)"
+CAPPED_OPENING = "[cli][info] Opening stream: 720p60 (hls)"
 # Verbatim from a channel on a custom transcode stack, probed the same day.
 FULL_LADDER = (
     "[cli][info] Available streams: audio_only, 160p30 (worst), 360p30, 480p30, "
@@ -52,7 +52,7 @@ FULL_OPENING = "[cli][info] Opening stream: 1080p60 (hls)"
 class ParsingTests(unittest.TestCase):
     def test_ladder_is_parsed_without_its_annotations(self):
         self.assertEqual(
-            parse_available(HASANABI_LADDER),
+            parse_available(CAPPED_LADDER),
             ["audio_only", "160p", "360p", "480p", "720p60"],
         )
 
@@ -73,11 +73,11 @@ class ParsingTests(unittest.TestCase):
         self.assertIsNone(parse_available(""))
 
     def test_opening_line_yields_the_rendition(self):
-        self.assertEqual(parse_opening(HASANABI_OPENING), "720p60")
+        self.assertEqual(parse_opening(CAPPED_OPENING), "720p60")
         self.assertEqual(parse_opening(FULL_OPENING), "1080p60")
 
     def test_opening_is_none_for_other_lines(self):
-        self.assertIsNone(parse_opening(HASANABI_LADDER))
+        self.assertIsNone(parse_opening(CAPPED_LADDER))
         self.assertIsNone(parse_opening("[cli][info] Found matching plugin twitch"))
 
     def test_heights_and_frame_rates(self):
@@ -201,8 +201,8 @@ class RecorderWiringTests(unittest.TestCase):
 
     def test_ladder_and_selection_are_recorded(self):
         rec = self.recorder(min_height=1080)
-        rec._note_quality(HASANABI_LADDER)
-        rec._note_quality(HASANABI_OPENING)
+        rec._note_quality(CAPPED_LADDER)
+        rec._note_quality(CAPPED_OPENING)
         session = rec.session
         self.assertEqual(session.quality_selected, "720p60")
         self.assertEqual(session.quality_available,
@@ -211,8 +211,8 @@ class RecorderWiringTests(unittest.TestCase):
 
     def test_state_survives_a_round_trip_to_disk(self):
         rec = self.recorder(min_height=1080)
-        rec._note_quality(HASANABI_LADDER)
-        rec._note_quality(HASANABI_OPENING)
+        rec._note_quality(CAPPED_LADDER)
+        rec._note_quality(CAPPED_OPENING)
         restored = Session.from_dict(rec.session.to_dict())
         self.assertEqual(restored.quality_selected, "720p60")
         self.assertEqual(restored.quality_available, rec.session.quality_available)
@@ -227,37 +227,37 @@ class RecorderWiringTests(unittest.TestCase):
 
     def test_the_ladder_alone_does_not_warn(self):
         rec = self.recorder(min_height=1080)
-        rec._note_quality(HASANABI_LADDER)
+        rec._note_quality(CAPPED_LADDER)
         self.assertEqual(rec.session.quality_warning, "")
         self.assertEqual(rec.session.quality_selected, "")
 
     def test_refuse_policy_stops_the_recording(self):
         rec = self.recorder(min_height=1080, on_low_quality="refuse")
-        rec._note_quality(HASANABI_LADDER)
-        rec._note_quality(HASANABI_OPENING)
+        rec._note_quality(CAPPED_LADDER)
+        rec._note_quality(CAPPED_OPENING)
         self.assertTrue(rec._stop.is_set())
         self.assertIn("720p", rec._stop_reason)
 
     def test_warn_policy_keeps_recording(self):
         rec = self.recorder(min_height=1080, on_low_quality="warn")
-        rec._note_quality(HASANABI_LADDER)
-        rec._note_quality(HASANABI_OPENING)
+        rec._note_quality(CAPPED_LADDER)
+        rec._note_quality(CAPPED_OPENING)
         self.assertFalse(rec._stop.is_set())
 
     def test_repeated_lines_are_idempotent(self):
         """streamlink reopens the stream on its own retries."""
         rec = self.recorder(min_height=1080)
         for _ in range(3):
-            rec._note_quality(HASANABI_LADDER)
-            rec._note_quality(HASANABI_OPENING)
+            rec._note_quality(CAPPED_LADDER)
+            rec._note_quality(CAPPED_OPENING)
         self.assertEqual(rec.session.quality_available,
                          ["audio_only", "160p", "360p", "480p", "720p60"])
         self.assertEqual(rec.session.quality_selected, "720p60")
 
     def test_disabled_floor_records_the_ladder_but_never_warns(self):
         rec = self.recorder(min_height=0)
-        rec._note_quality(HASANABI_LADDER)
-        rec._note_quality(HASANABI_OPENING)
+        rec._note_quality(CAPPED_LADDER)
+        rec._note_quality(CAPPED_OPENING)
         self.assertEqual(rec.session.quality_selected, "720p60")
         self.assertEqual(rec.session.quality_warning, "")
         self.assertFalse(rec._stop.is_set())

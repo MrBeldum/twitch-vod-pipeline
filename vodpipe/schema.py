@@ -379,9 +379,9 @@ RETIRED_PATHS = frozenset({
     # so once the last `edit.*` rule went the container itself became "not a
     # known setting" -- and an installed config.json that has it would stop the
     # application starting, which is the exact failure retirement exists to
-    # prevent. Retiring the section also covers the model-decided variant in
-    # `twitch-vod-ai-editor`, whose keys this build never knew -- which matters
-    # because both tools read the same config.json when installed side by side.
+    # prevent. Retiring the section also covers the model-decided variant kept
+    # in the separate editor build, whose keys this one never knew -- which
+    # matters because both read the same config.json when installed side by side.
     "edit",
 
     # The other rundown engines, removed 2026-08-19 at the operator's request
