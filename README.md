@@ -833,7 +833,7 @@ uploaded by hand — see **[the latest release](https://github.com/MrBeldum/twit
 and [CHANGELOG.md](CHANGELOG.md).
 
 The executable is an unsigned .NET Framework 4 host, so Windows SmartScreen warns on first
-run. You can compile it yourself with `packaginguild.cmd` — that is exactly what the
+run. You can compile it yourself with `packaging\build.cmd` — that is exactly what the
 workflow does.
 
 ## License
