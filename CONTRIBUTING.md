@@ -12,7 +12,7 @@ only**, on purpose, and it should stay that way. You need:
 |---|---|---|
 | Python 3.14+ | everything | no venv needed, no `pip install` |
 | `ffmpeg` + `ffprobe` | segmenting, remux, proxies, verification | the test suite really runs them |
-| `streamlink` 8.4+ | capture and VOD download | not needed for the tests |
+| `streamlink` 8.4+ | capture and VOD download | **the tests need it too** — `Pipeline` resolves it at construction |
 | `claude` and/or `grok` | editor reports | optional |
 
 ```
