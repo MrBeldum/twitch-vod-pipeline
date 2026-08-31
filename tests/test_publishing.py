@@ -164,7 +164,13 @@ class GenerationTransactionTests(unittest.TestCase):
     """Every canonical file changes as one recoverable generation."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="vodpipe-generation-"))
+        # Resolved deliberately: write_export_sets() resolves the directories it
+        # is given, so a test that compares a commit target against this path is
+        # comparing against the resolved form. On Windows a user name longer
+        # than eight characters has an 8.3 alias ("RUNNER~1"), mkdtemp can
+        # return it, and the two spellings then never compare equal -- which
+        # passes on a short user name and fails on a long one.
+        self.tmp = Path(tempfile.mkdtemp(prefix="vodpipe-generation-")).resolve()
         write_exports(self.tmp, sample_words(), censor=CensorList(["hello"]),
                       meta={"source": "old.mp4", "complete": True})
         self.before = self.snapshot()

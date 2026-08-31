@@ -824,6 +824,18 @@ Two documents are worth reading before proposing a change:
 Please report security issues privately — see [SECURITY.md](SECURITY.md). By taking part
 you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
+## Releases
+
+Every release attaches the compiled `VODPipeline.exe`, an sdist, a wheel and a
+`SHA256SUMS.txt`, all built by
+[the release workflow](.github/workflows/release.yml) from the tagged commit rather than
+uploaded by hand — see **[the latest release](https://github.com/MrBeldum/twitch-vod-pipeline/releases/latest)**
+and [CHANGELOG.md](CHANGELOG.md).
+
+The executable is an unsigned .NET Framework 4 host, so Windows SmartScreen warns on first
+run. You can compile it yourself with `packaginguild.cmd` — that is exactly what the
+workflow does.
+
 ## License
 
 [MIT](LICENSE). Use it, change it, ship it.

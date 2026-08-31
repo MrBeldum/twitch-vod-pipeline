@@ -143,6 +143,12 @@ class StructuredInputTests(unittest.TestCase):
 
 class EligibilityTests(SummaryFixture):
     def test_status_metadata_no_speech_and_structured_count_are_all_required(self):
+        # An installed engine is a property of the machine; the eligibility
+        # reasons under test are only reached once capability passes.
+        capable = patch.object(self.pipeline, "_summary_capability",
+                               return_value=(True, ""))
+        capable.start()
+        self.addCleanup(capable.stop)
         chunk = self.chunk(0)
         self.config.set("summary.min_words", 2)
         self.publish(chunk, ["only"])

@@ -1,0 +1,63 @@
+# Publishes vodpipe to PyPI. Disabled until a one-time setup is done.
+#
+# GitHub Packages has no Python registry, so PyPI is where a `pip install vodpipe`
+# has to come from. This uses Trusted Publishing, which means no API token is ever
+# stored in this repository.
+#
+# To enable, once:
+#   1. Create the project on https://pypi.org (or reserve the name).
+#   2. PyPI -> your project -> Publishing -> add a GitHub trusted publisher:
+#        owner       MrBeldum
+#        repository  twitch-vod-pipeline
+#        workflow    publish-pypi.yml
+#        environment pypi
+#   3. In this repo: Settings -> Environments -> create an environment named `pypi`
+#      (add a required reviewer if you want a manual gate on every publish).
+#
+# Until step 2 is done this workflow will fail at the publish step, which is why it
+# only runs when you ask for it or when a release is published.
+
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build
+          python -m twine check --strict dist/*
+      - uses: actions/upload-artifact@v5
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/vodpipe
+    permissions:
+      id-token: write        # required for Trusted Publishing; nothing else is needed
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

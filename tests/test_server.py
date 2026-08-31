@@ -392,9 +392,12 @@ class ServerTests(unittest.TestCase):
         chunk.transcript_status = DONE
         chunk.word_count = len(words)
         from vodpipe.jobs import Job
+        # The engine's presence is a property of the machine, not of the
+        # request being tested: without it the handler correctly answers 409.
         with patch.object(
                 self.pipeline, "_queue_summary",
-                return_value=Job("summary:test", "test rundown", "summary")):
+                return_value=Job("summary:test", "test rundown", "summary")),                 patch.object(self.pipeline, "_summary_capability",
+                             return_value=(True, "")):
             status, payload = json_request(
                 "/api/chunk/summarize", {"session_id": session.session_id,
                                          "chunk": "c000"})
