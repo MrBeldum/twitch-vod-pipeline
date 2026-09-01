@@ -256,7 +256,7 @@ Implementation notes worth knowing before changing anything:
   (`packaging/host.cs`, built by `vodpipe install`): AppUserModelID
   `MrBeldum.VODPipeline`, Start Menu shortcut, Apps & Features uninstall key.
   Closing the Chromium window still shuts the pipeline down.
-- **The dashboard's design system is `DESIGN.md`, and its palette is tested.**
+- **The dashboard's design system is `docs/DESIGN.md`, and its palette is tested.**
   Tokens, spacing, component contracts and the accepted-debt list live there;
   read it before restyling anything. A label on a filled button must use the
   matching `--on-*` token rather than a literal `#fff`:
@@ -267,7 +267,7 @@ Implementation notes worth knowing before changing anything:
   in a screenshot says "2.91". `tests/test_ui_contract.py::PaletteContrastTests`
   now computes the ratios straight out of `style.css`, so a palette re-picked by
   eye fails the suite instead of shipping. Two known gaps are recorded as
-  accepted debt in `DESIGN.md` rather than quietly fixed: there is no focus trap
+  accepted debt in `docs/DESIGN.md` rather than quietly fixed: there is no focus trap
   on the drawer (it claimed one until the 2026-08-25 audit), and `--line`
   hairlines sit near 1.3:1, so an unfocused input is delimited by little more
   than its fill.

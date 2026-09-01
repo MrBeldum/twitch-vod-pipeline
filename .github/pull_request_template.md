@@ -15,5 +15,5 @@
 - [ ] If a config key, manifest field or published file was **removed**, it is retired
       (`schema.RETIRED_PATHS` / `state._RETIRED_CHUNK_FIELDS` / `exports.RETIRED_EDIT_EXPORTS`)
       and `tests/test_retirement.py` covers it
-- [ ] If it changes documented behaviour, `README.md` / `CLAUDE.md` / `DESIGN.md` are updated
+- [ ] If it changes documented behaviour, `README.md` / `CLAUDE.md` / `docs/DESIGN.md` are updated
 - [ ] Nothing added can lose a recording, master or transcript

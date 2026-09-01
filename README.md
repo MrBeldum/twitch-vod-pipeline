@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/logo.png" alt="VOD Pipeline" width="120" height="120">
+  <img src="https://raw.githubusercontent.com/MrBeldum/twitch-vod-pipeline/main/docs/logo.png" alt="VOD Pipeline" width="120" height="120">
 </p>
 
 <h1 align="center">Twitch VOD → Premiere Pipeline</h1>
@@ -808,7 +808,7 @@ What happens when things go wrong, since a recorder is judged on its bad days:
 
 ## Contributing
 
-Contributions are welcome. Start with **[CONTRIBUTING.md](CONTRIBUTING.md)** — it covers
+Contributions are welcome. Start with **[CONTRIBUTING.md](.github/CONTRIBUTING.md)** — it covers
 the setup (there is almost none), how to run the suite, and the three failure modes this
 codebase actually has.
 
@@ -818,11 +818,11 @@ Two documents are worth reading before proposing a change:
   decision is recorded there with the failure that caused it, including several features
   that were built and then deliberately removed. Most "obvious improvements" have already
   been tried and are written up with the reason they were reverted.
-- **[`DESIGN.md`](DESIGN.md)** is the dashboard's design system. The palette is
+- **[`docs/DESIGN.md`](docs/DESIGN.md)** is the dashboard's design system. The palette is
   contrast-tested in CI, so a colour picked by eye will fail the suite.
 
-Please report security issues privately — see [SECURITY.md](SECURITY.md). By taking part
-you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
+Please report security issues privately — see [SECURITY.md](.github/SECURITY.md). By taking part
+you agree to the [Code of Conduct](.github/CODE_OF_CONDUCT.md).
 
 ## Releases
 
@@ -830,7 +830,7 @@ Every release attaches the compiled `VODPipeline.exe`, an sdist, a wheel and a
 `SHA256SUMS.txt`, all built by
 [the release workflow](.github/workflows/release.yml) from the tagged commit rather than
 uploaded by hand — see **[the latest release](https://github.com/MrBeldum/twitch-vod-pipeline/releases/latest)**
-and [CHANGELOG.md](CHANGELOG.md).
+and [CHANGELOG.md](docs/CHANGELOG.md).
 
 The executable is an unsigned .NET Framework 4 host, so Windows SmartScreen warns on first
 run. You can compile it yourself with `packaging\build.cmd` — that is exactly what the

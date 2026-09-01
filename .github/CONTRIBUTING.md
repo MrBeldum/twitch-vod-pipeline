@@ -36,7 +36,7 @@ unavailable. Start there when something will not run.
    decision, with the failure that caused it. Most "obvious improvements" to this codebase
    have already been tried and are written up there with the reason they were reverted.
    Changing something it documents is fine — contradicting it silently is not.
-3. **Read `DESIGN.md`** if you are touching the dashboard. The palette is contrast-tested
+3. **Read `docs/DESIGN.md`** if you are touching the dashboard. The palette is contrast-tested
    in `tests/test_ui_contract.py`; a colour picked by eye will fail the suite.
 
 ## The failure modes this project actually has

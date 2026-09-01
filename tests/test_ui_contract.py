@@ -223,7 +223,7 @@ def contrast_ratio(foreground: str, background: str) -> float:
 
 
 class PaletteContrastTests(unittest.TestCase):
-    """DESIGN.md commits to WCAG 2.2 AA. The tokens have to actually meet it.
+    """docs/DESIGN.md commits to WCAG 2.2 AA. The tokens have to actually meet it.
 
     The restyle set `--on-live` to white, which is 2.91:1 on `--live` -- below
     even the 3:1 non-text floor -- and it lands on Record, Stop and the REC

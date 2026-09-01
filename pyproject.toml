@@ -30,14 +30,14 @@ classifiers = [
 
 # Deliberately empty, and a design constraint rather than an accident: the pipeline is
 # standard library only, so there is no wheel to build and nothing to resolve. See
-# CONTRIBUTING.md before adding anything here.
+# .github/CONTRIBUTING.md before adding anything here.
 dependencies = []
 
 [project.urls]
 Homepage = "https://github.com/MrBeldum/twitch-vod-pipeline"
 Repository = "https://github.com/MrBeldum/twitch-vod-pipeline"
 Issues = "https://github.com/MrBeldum/twitch-vod-pipeline/issues"
-Changelog = "https://github.com/MrBeldum/twitch-vod-pipeline/blob/main/CHANGELOG.md"
+Changelog = "https://github.com/MrBeldum/twitch-vod-pipeline/blob/main/docs/CHANGELOG.md"
 
 [project.scripts]
 vodpipe = "vodpipe.cli:main"
