@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The dashboard's overload 503 is now actually delivered on Windows.** The rejection
+  wrote the response and closed a socket whose inbound request had never been read, and
+  Windows resets such a socket rather than closing it, discarding the response already
+  queued for send — so a client saw `WinError 10053` instead of
+  `dashboard is busy; retry shortly`. Rejection now happens on bounded worker threads
+  that drain the request before closing, so the accept loop pays nothing for it; when the
+  rejection queue is full the connection is dropped immediately, exactly as before.
+
 ## [1.0.1] — 2026-09-01
 
 Packaging and repository presentation only. No change to the pipeline; the test suite is

@@ -599,6 +599,81 @@ class ServerTests(unittest.TestCase):
             httpd.shutdown()
             httpd.server_close()
 
+    def test_overload_rejection_drains_the_request_before_closing(self):
+        """The mechanism behind the 503, tested without the race.
+
+        `test_handler_admission_is_bounded_and_overload_is_json` failed roughly
+        three CI runs in five with `WinError 10053`: the rejection wrote the
+        503 and closed a socket whose inbound request had never been read, and
+        Windows resets such a socket rather than closing it, discarding the
+        response already queued for send. Whether the client loses that race is
+        timing -- which is why that test catches this only sometimes, and never
+        on some machines. What is not timing is whether the rejection reads the
+        request at all, so that is what this asserts.
+        """
+        server, client = socket.socketpair()
+        self.addCleanup(server.close)
+        self.addCleanup(client.close)
+        client.sendall(b"GET /api/state HTTP/1.1\r\n"
+                       b"Host: 127.0.0.1\r\n"
+                       b"X-Padding: " + b"x" * 2000 + b"\r\n\r\n")
+
+        self.httpd._write_overload(server)
+
+        client.settimeout(2)
+        received = b""
+        while b"\r\n\r\n" not in received:
+            chunk = client.recv(4096)
+            if not chunk:
+                break
+            received += chunk
+        head, _, body = received.partition(b"\r\n\r\n")
+        self.assertIn(b"503 Service Unavailable", head)
+        self.assertIn("busy", json.loads(body)["error"])
+
+        # The point of the exercise: the request is gone from the receive
+        # buffer, so the close that follows is a close and not a reset.
+        server.setblocking(False)
+        try:
+            self.assertEqual(server.recv(4096), b"")
+        except BlockingIOError:
+            pass
+
+    def test_overload_rejection_never_blocks_the_accept_loop(self):
+        """A full rejection queue drops the connection rather than waiting.
+
+        The drain is what makes the 503 arrive, and it is also why the drain
+        cannot run where connections are accepted. This is the fallback that
+        keeps `_reject_overload` O(1) however deep the flood goes.
+        """
+        from vodpipe import server as server_module
+
+        httpd = serve(self.pipeline, self.config, port=0, open_browser=False,
+                      max_handlers=1)
+        self.addCleanup(httpd.server_close)
+        # Fill the queue, with a stand-in rejector so none is started to empty it.
+        with httpd._rejector_lock:
+            httpd._rejectors.append(threading.current_thread())
+        for _ in range(server_module.REJECT_QUEUE_SIZE):
+            httpd._reject_queue.put_nowait(object())
+
+        left, right = socket.socketpair()
+        self.addCleanup(right.close)
+        started = time.monotonic()
+        httpd._reject_overload(left)
+        self.assertLess(time.monotonic() - started, 0.5)
+        # Dropped rather than queued: the far end sees the connection go away.
+        right.settimeout(2)
+        try:
+            self.assertEqual(right.recv(4096), b"")
+        except OSError:
+            pass                    # a reset is also "gone", and is fine here
+
+        with httpd._rejector_lock:
+            httpd._rejectors.clear()
+        while not httpd._reject_queue.empty():
+            httpd._reject_queue.get_nowait()
+
     def test_partial_headers_are_closed_at_the_header_deadline(self):
         httpd = serve(self.pipeline, self.config, port=0, open_browser=False,
                       max_handlers=2, socket_timeout=1.0,

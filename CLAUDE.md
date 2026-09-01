@@ -486,26 +486,31 @@ Implementation notes worth knowing before changing anything:
   real, and recovery reaches the republish on its own because the old manifest declares
   names that are no longer canonical.
 
-- **Known open defect: the dashboard's overload 503 is often never delivered on Windows.**
-  *Found 2026-08-18, left unfixed by decision.* `server._reject_overload` writes the JSON
-  503 and then closes the socket **without reading the request the client already sent**.
+- **The overload 503 is written by a rejector thread, never by the accept loop.**
+  *Found 2026-08-18, fixed 2026-09-01.* `server._reject_overload` used to write the JSON
+  503 and close the socket **without reading the request the client had already sent**.
   Windows resets a connection closed with unread inbound data, which discards the response
-  already queued for send, so the client gets `WinError 10053` instead of
+  already queued for send, so the client got `WinError 10053` instead of
   `dashboard is busy; retry shortly`. It is a race between the RST and the client's read,
-  which is why it reproduces about three runs in five.
+  so it reproduced about three CI runs in five and **not at all on the development
+  machine** — 12 consecutive passes there against the unfixed code. A test that passes
+  everywhere you can watch it is the reason this sat open.
 
-  **`tests/test_server.py::test_handler_admission_is_bounded_and_overload_is_json` is
-  therefore an intermittently failing test that is catching something real — do not
-  "stabilise" it by loosening its assertion or its timeouts.** (Both were tried; the
-  timeouts are not the cause.) It fails the same way on commits long predating the change
-  that found it.
+  The repair is the one the earlier note asked for: something with no accept-loop cost.
+  Draining before the close is what makes the 503 arrive, and doing it inline would slow
+  down accepting during exactly the flood the rejection exists to survive. So
+  `_reject_overload` now only hands the socket to a bounded queue and returns, and
+  `REJECTOR_THREADS` workers do the rest — send, `shutdown(SHUT_WR)`, drain the request
+  under both a deadline and a byte cap, close. **When the queue is full the socket is
+  dropped where it stands**, which is what every rejection used to do, so a flood deep
+  enough to overrun the queue costs nothing more than it used to.
 
-  Not fixed because the obvious repair — drain the pending bytes before closing — runs on
-  the accept loop, so it makes rejection slower during exactly the flood the rejection
-  exists to survive. That trade is worth more thought than the bug costs: the path is only
-  reachable when every handler slot is already busy, and the cost is an error message the
-  operator does not see on a loopback-bound dashboard. If it is ever fixed, confirm the
-  mechanism first and prefer something with no accept-loop cost.
+  **The regression test is `test_overload_rejection_drains_the_request_before_closing`,
+  not the admission test.** Whether the client loses the race is timing; whether the
+  rejection reads the request is not, so the new test asserts the second over a
+  `socketpair` and fails deterministically if the drain is removed (verified by removing
+  it). `test_handler_admission_is_bounded_and_overload_is_json` stays exactly as it was —
+  it is the end-to-end statement, and it was always right.
 
 - **Retiring a published file needs `exports.RETIRED_EDIT_EXPORTS`, not just removal from
   `PUBLISHED_EXPORTS`.** A publish only deletes files it *owns*, so a name simply dropped

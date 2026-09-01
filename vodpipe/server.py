@@ -11,10 +11,12 @@ import json
 import math
 import mimetypes
 import os
+import queue
 import secrets
 import socket
 import subprocess
 import threading
+import time
 import webbrowser
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -60,6 +62,27 @@ MAX_CONCURRENT_HANDLERS = 32
 SOCKET_TIMEOUT_SECONDS = 10.0
 HEADER_DEADLINE_SECONDS = 10.0
 BODY_DEADLINE_SECONDS = 20.0
+
+# Rejecting an overload has to finish the conversation, not just write into it:
+# a socket closed with unread inbound data is reset rather than closed, and the
+# reset discards the 503 already queued for send. So the rejection reads the
+# request it is refusing before it closes. That read cannot happen on the accept
+# loop -- it would slow down accepting during exactly the flood the rejection
+# exists to survive -- so it happens on these workers instead, and the accept
+# loop only hands the socket over.
+REJECTOR_THREADS = 2
+REJECT_QUEUE_SIZE = 64
+REJECT_DRAIN_SECONDS = 0.5
+REJECT_DRAIN_BYTES = 65536
+
+_OVERLOAD_BODY = json.dumps({"error": "dashboard is busy; retry shortly"}).encode("utf-8")
+_OVERLOAD_RESPONSE = (
+    b"HTTP/1.1 503 Service Unavailable\r\n"
+    b"Content-Type: application/json; charset=utf-8\r\n"
+    + f"Content-Length: {len(_OVERLOAD_BODY)}\r\n".encode("ascii")
+    + b"Cache-Control: no-store\r\nConnection: close\r\n\r\n"
+    + _OVERLOAD_BODY
+)
 
 # Hostnames a browser may legitimately use to reach a loopback-bound server.
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -133,6 +156,9 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
         self._handler_slots = threading.BoundedSemaphore(max_handlers)
         self._active_lock = threading.Lock()
         self._active_handlers = 0
+        self._reject_queue: queue.Queue = queue.Queue(maxsize=REJECT_QUEUE_SIZE)
+        self._rejector_lock = threading.Lock()
+        self._rejectors: list[threading.Thread] = []
         super().__init__(server_address, handler)
 
     @property
@@ -166,20 +192,85 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
             self._handler_slots.release()
 
     def _reject_overload(self, request: socket.socket) -> None:
-        body = json.dumps({"error": "dashboard is busy; retry shortly"}).encode("utf-8")
-        response = (
-            b"HTTP/1.1 503 Service Unavailable\r\n"
-            b"Content-Type: application/json; charset=utf-8\r\n"
-            + f"Content-Length: {len(body)}\r\n".encode("ascii")
-            + b"Cache-Control: no-store\r\nConnection: close\r\n\r\n"
-            + body
-        )
+        """Hand an unadmitted connection to a rejector. Never blocks."""
+        self._ensure_rejectors()
         try:
-            request.sendall(response)
-        except OSError:
-            pass
-        finally:
+            self._reject_queue.put_nowait(request)
+        except queue.Full:
+            # A flood deep enough to fill this queue is past the point where a
+            # courteous refusal buys anything, so it is dropped where it stands
+            # -- which is what this method used to do to every rejection.
             self.shutdown_request(request)
+
+    def _ensure_rejectors(self) -> None:
+        """Start the rejector threads on first use, not with every server."""
+        if self._rejectors:
+            return
+        with self._rejector_lock:
+            if self._rejectors:
+                return
+            for index in range(REJECTOR_THREADS):
+                thread = threading.Thread(
+                    target=self._rejector_loop, daemon=True,
+                    name=f"vodpipe-reject-{index}")
+                thread.start()
+                self._rejectors.append(thread)
+
+    def _rejector_loop(self) -> None:
+        while True:
+            request = self._reject_queue.get()
+            if request is None:               # sentinel, from server_close()
+                return
+            try:
+                self._write_overload(request)
+            except Exception:                 # never let a refusal kill a worker
+                LOG.debug("overload rejection failed", exc_info=True)
+            finally:
+                self.shutdown_request(request)
+
+    def _write_overload(self, request: socket.socket) -> None:
+        try:
+            request.sendall(_OVERLOAD_RESPONSE)
+            request.shutdown(socket.SHUT_WR)
+        except OSError:
+            return
+        # Now read what the client already sent, so that closing this socket is
+        # a close and not a reset. Bounded by both a deadline and a byte count:
+        # a client still uploading when the budget runs out is one we are
+        # entitled to cut off, and it has its 503 either way.
+        deadline = time.monotonic() + REJECT_DRAIN_SECONDS
+        remaining = REJECT_DRAIN_BYTES
+        while remaining > 0:
+            timeout = deadline - time.monotonic()
+            if timeout <= 0:
+                return
+            try:
+                request.settimeout(timeout)
+                chunk = request.recv(min(remaining, 8192))
+            except OSError:
+                return
+            if not chunk:                     # client closed: nothing pending
+                return
+            remaining -= len(chunk)
+
+    def server_close(self) -> None:
+        with self._rejector_lock:
+            rejectors, self._rejectors = self._rejectors, []
+        for _ in rejectors:
+            try:
+                self._reject_queue.put_nowait(None)
+            except queue.Full:
+                pass
+        for thread in rejectors:
+            thread.join(timeout=REJECT_DRAIN_SECONDS + 0.5)
+        while True:                           # queued but never rejected
+            try:
+                pending = self._reject_queue.get_nowait()
+            except queue.Empty:
+                break
+            if pending is not None:
+                self.shutdown_request(pending)
+        super().server_close()
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
