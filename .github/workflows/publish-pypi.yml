@@ -14,14 +14,19 @@
 #   3. In this repo: Settings -> Environments -> create an environment named `pypi`
 #      (add a required reviewer if you want a manual gate on every publish).
 #
-# Until step 2 is done this workflow will fail at the publish step, which is why it
-# only runs when you ask for it or when a release is published.
+# Until step 2 is done, publishing fails with `invalid-publisher`: PyPI issues no
+# token because it has no publisher to match the request against. So this runs only
+# when asked for, by hand. Once the trusted publisher exists, restore the automatic
+# trigger by putting these two lines back above `workflow_dispatch:`
+#
+#   release:
+#     types: [published]
+#
+# and re-running this workflow against the tag you want on PyPI.
 
 name: Publish to PyPI
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions:
