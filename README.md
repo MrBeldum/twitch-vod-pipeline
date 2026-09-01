@@ -13,6 +13,7 @@
   <a href="https://github.com/MrBeldum/twitch-vod-pipeline/actions/workflows/ci.yml"><img src="https://github.com/MrBeldum/twitch-vod-pipeline/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT licensed"></a>
   <a href="https://github.com/MrBeldum/twitch-vod-pipeline/releases/latest"><img src="https://img.shields.io/github/v/release/MrBeldum/twitch-vod-pipeline?label=release" alt="Latest release"></a>
+  <a href="https://pypi.org/project/vodpipe/"><img src="https://img.shields.io/pypi/v/vodpipe?label=pypi" alt="PyPI"></a>
   <img src="https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-3776ab.svg" alt="Python 3.12+">
   <img src="https://img.shields.io/badge/dependencies-none-success.svg" alt="No dependencies">
   <img src="https://img.shields.io/badge/platform-Windows-0078d4.svg" alt="Windows">
@@ -68,11 +69,27 @@ can find and what is missing.
 
 ## Quick start
 
+From a clone — the full thing, including the desktop app:
+
 ```
 vodpipe.cmd doctor          # check the environment
 vodpipe.cmd install         # compile VODPipeline.exe and register it with Windows
 vodpipe.cmd                 # open the desktop app (Chromium/Chrome window)
 ```
+
+Or from PyPI, if you only want the recorder and the dashboard:
+
+```
+pip install vodpipe
+vodpipe doctor
+vodpipe dashboard
+```
+
+The wheel carries the pipeline and the dashboard, and no dependencies — there is nothing
+for pip to resolve. It does **not** carry `packaging/`, so `vodpipe install` has no
+`host.cs` to compile and says so; the Windows desktop app needs a clone. A pip install
+also keeps its `config.json`, `.work/` and `logs/` beside the installed package, so a
+virtualenv per install is the sane way to run it.
 
 After `install`, Windows shows **VOD Pipeline** in the Start Menu and in
 Settings → Apps. Double-click `VODPipeline.exe`, or `Start VOD Pipeline.vbs`,
@@ -831,6 +848,10 @@ Every release attaches the compiled `VODPipeline.exe`, an sdist, a wheel and a
 [the release workflow](.github/workflows/release.yml) from the tagged commit rather than
 uploaded by hand — see **[the latest release](https://github.com/MrBeldum/twitch-vod-pipeline/releases/latest)**
 and [CHANGELOG.md](docs/CHANGELOG.md).
+
+The same wheel and sdist go to [PyPI](https://pypi.org/project/vodpipe/) as `vodpipe`,
+published by [a workflow](.github/workflows/publish-pypi.yml) over PyPI's Trusted
+Publishing — no API token is stored in this repository.
 
 The executable is an unsigned .NET Framework 4 host, so Windows SmartScreen warns on first
 run. You can compile it yourself with `packaging\build.cmd` — that is exactly what the
