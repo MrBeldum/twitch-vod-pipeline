@@ -804,6 +804,12 @@ What happens when things go wrong, since a recorder is judged on its bad days:
   across an HLS sequence gap; copying it meant one dropped connection could abort ffmpeg
   mid-recording. It was discarded at remux anyway, so nothing is lost by never taking it.
   Corrupt input packets are dropped rather than treated as fatal.
+- **The app icon has one source.** `docs/logo.png` is the only icon anyone edits.
+  `python packaging/prebuild.py` regenerates the `.ico`, the PNGs and the dashboard
+  favicon from it, and stamps the source's digest beside them so the test suite fails if
+  they fall behind. It runs automatically before every `vodpipe install`, which also
+  rebuilds the host whenever the icon (or the manifest, or the version) has changed and
+  tells Windows to drop its cached icon afterwards.
 - **Restarting reconciles what is on disk.** Interrupted recordings get remuxed, stale
   `.partial` files are removed, invalid masters are rebuilt, and a second restart does
   nothing further.

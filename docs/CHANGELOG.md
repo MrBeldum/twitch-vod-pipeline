@@ -6,8 +6,40 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.2] — 2026-09-02
+
+The report engine, which had never once produced a report through `grok -p`, and the
+icons, which could not be replaced.
+
 ### Fixed
 
+- **`grok -p` could not write a report at all, and the failure was certain rather than
+  intermittent.** Grok's CLI offloads any `--prompt-file` over roughly 24 KB: the prompt
+  never enters the conversation, and the model is handed a stub it has to `read_file` its
+  way out of. Every real transcript is around 104 KB, so `--max-turns 1` spent the only
+  turn on the read and the run was cancelled before an answer existed. Three further
+  faults sat behind it: `--tools ""` restricts nothing (an empty allowlist reads as
+  "unset", leaving all 26 built-ins live along with any MCP servers imported from another
+  application's configuration), `--output-format plain` prints every assistant message so
+  the model's narration would have been published as the opening of the report, and the
+  shared prompt's "Write `report.md`" read to an agent as a file-writing task. Grok is now
+  given a working directory holding `transcript.md`, an instruction small enough to arrive
+  inline, four tools and a `summary.max_turns` budget; it writes `report.md` and the
+  pipeline reads that back. `claude -p` is unchanged — its empty tool list genuinely does
+  disable tools — and the two argvs are deliberately not alike.
+- **Every chunk was queued for two reports.** Stitching a chunk boundary changes the
+  transcript generation of both chunks it touches, and the re-queue bypassed the chat gate
+  that ordinary finalisation uses. The newer chunk's chat was still downloading, so it was
+  reported once without the audience and again with it.
+- **Replacing the app icon did nothing.** Three independent reasons, all now fixed: the
+  icons were six hand-exported files with no stated source, so changing `docs/logo.png`
+  changed only the README; `ensure_host` compared the compiled exe against `host.cs`
+  alone, so a new icon never triggered a rebuild; and nothing told the Windows shell to
+  drop its cached icon afterwards. Every icon is now generated from `docs/logo.png` by
+  `packaging/prebuild.py`, which runs before every compile.
+- **The Windows host reported version 1.0.0 two releases on.** The version was a literal
+  in `host.cs`; it is now generated from `vodpipe.__version__` into `version.g.cs`, so
+  Apps & Features and the exe's own properties follow the package.
 - **The dashboard's overload 503 is now actually delivered on Windows.** The rejection
   wrote the response and closed a socket whose inbound request had never been read, and
   Windows resets such a socket rather than closing it, discarding the response already
@@ -89,4 +121,5 @@ the full suite of ~960 tests passes.
 - Full CLI: `doctor`, `record`, `vod`, `snapshot`, `transcribe`, `republish`, `sessions`,
   `dashboard`, `app`, `install`.
 
+[1.0.2]: https://github.com/MrBeldum/twitch-vod-pipeline/releases/tag/v1.0.2
 [1.0.0]: https://github.com/MrBeldum/twitch-vod-pipeline/releases/tag/v1.0.0

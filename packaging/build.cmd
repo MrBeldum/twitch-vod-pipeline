@@ -8,6 +8,8 @@ if not exist "%CSC%" (
   echo csc.exe not found. .NET Framework 4 is required to compile the Windows host.
   exit /b 1
 )
+python "%PACK%prebuild.py"
+if errorlevel 1 echo prebuild failed; building with the committed icons and version.
 if not exist "%PACK%vodpipe.ico" (
   echo packaging\vodpipe.ico is missing.
   exit /b 1
@@ -15,7 +17,7 @@ if not exist "%PACK%vodpipe.ico" (
 "%CSC%" /nologo /optimize+ /target:winexe /platform:x64 ^
   /reference:System.Windows.Forms.dll /reference:System.Drawing.dll ^
   /win32icon:"%PACK%vodpipe.ico" /win32manifest:"%PACK%app.manifest" ^
-  /out:"%ROOT%\VODPipeline.exe" "%PACK%host.cs"
+  /out:"%ROOT%\VODPipeline.exe" "%PACK%host.cs" "%PACK%version.g.cs"
 if errorlevel 1 exit /b 1
 copy /Y "%PACK%VODPipeline.VisualElementsManifest.xml" "%ROOT%\VODPipeline.VisualElementsManifest.xml" >nul
 echo Built %ROOT%\VODPipeline.exe

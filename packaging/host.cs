@@ -19,9 +19,9 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("Twitch VOD to Premiere pipeline")]
 [assembly: AssemblyCompany("MrBeldum")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 MrBeldum. MIT licensed.")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
-[assembly: AssemblyInformationalVersion("1.0.0")]
+// Version attributes and BuildInfo live in the generated version.g.cs, written
+// from vodpipe.__version__ by packaging/prebuild.py. They were literals here
+// and were still reporting 1.0.0 two releases later.
 
 internal static class Native
 {
@@ -32,6 +32,12 @@ internal static class Native
 
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     public static extern int SetCurrentProcessExplicitAppUserModelID(string appID);
+
+    public const int SHCNE_ASSOCCHANGED = 0x08000000;
+    public const uint SHCNF_IDLIST = 0x0000;
+
+    [DllImport("shell32.dll")]
+    public static extern void SHChangeNotify(int eventId, uint flags, IntPtr item1, IntPtr item2);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string lpName);
@@ -452,7 +458,7 @@ internal static class Program
                 key.SetValue("DisplayName", Native.AppName);
                 key.SetValue("DisplayIcon", exe);
                 key.SetValue("Publisher", "MrBeldum");
-                key.SetValue("DisplayVersion", "1.0.0");
+                key.SetValue("DisplayVersion", BuildInfo.Version);
                 key.SetValue("InstallLocation", root);
                 key.SetValue("UninstallString", "\"" + exe + "\" --uninstall");
                 key.SetValue("QuietUninstallString", "\"" + exe + "\" --uninstall");
@@ -477,6 +483,12 @@ internal static class Program
                 string src = Path.Combine(root, "packaging", "VODPipeline.VisualElementsManifest.xml");
                 if (File.Exists(src)) File.Copy(src, tile, true);
             }
+            catch { }
+            // The icon is compiled into this exe, so a rebuilt host is a new
+            // icon for a path the shell has already cached. Nothing repaints
+            // until the shell is told, which is why a corrected icon could
+            // look like it had not been corrected at all.
+            try { Native.SHChangeNotify(Native.SHCNE_ASSOCCHANGED, Native.SHCNF_IDLIST, IntPtr.Zero, IntPtr.Zero); }
             catch { }
             return 0;
         }

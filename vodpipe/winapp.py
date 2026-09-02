@@ -40,6 +40,41 @@ def find_csc() -> str | None:
     return None
 
 
+def build_inputs() -> list[Path]:
+    """Everything baked into the compiled host.
+
+    `ensure_host` compares the exe against all of these. It used to compare
+    against `host.cs` alone, which meant a new icon was compiled in only if the
+    C# happened to change in the same breath -- so replacing the artwork and
+    running `vodpipe install` produced no rebuild, no error, and the old icon.
+    The icon is an input to the compile (`/win32icon`), so it has to be an input
+    to the staleness check.
+    """
+    packaging = APP_ROOT / "packaging"
+    return [packaging / "host.cs",
+            packaging / "version.g.cs",
+            packaging / "app.manifest",
+            packaging / "vodpipe.ico",
+            packaging / "VODPipeline.VisualElementsManifest.xml"]
+
+
+def run_prebuild() -> None:
+    """Regenerate the icons and the version file before compiling.
+
+    Best effort: both outputs are checked in, so a machine without ffmpeg still
+    builds -- it just builds what is committed. Failing an install over an icon
+    would be a worse trade than shipping the previous one.
+    """
+    script = APP_ROOT / "packaging" / "prebuild.py"
+    if not script.is_file():
+        return
+    done = subprocess.run([sys.executable, str(script)],
+                          capture_output=True, text=True)
+    if done.returncode != 0:
+        LOG.warning("generated build inputs not refreshed, using the committed "
+                    "ones: %s", (done.stderr or done.stdout or "").strip())
+
+
 def build_host() -> Path:
     """Compile `VODPipeline.exe` next to the package. Raises on failure."""
     csc = find_csc()
@@ -47,11 +82,14 @@ def build_host() -> Path:
         raise RuntimeError(
             "csc.exe not found; .NET Framework 4 is required to compile "
             "the Windows host")
+    run_prebuild()
     packaging = APP_ROOT / "packaging"
     icon = packaging / "vodpipe.ico"
     manifest = packaging / "app.manifest"
     source = packaging / "host.cs"
-    missing = [str(path) for path in (icon, manifest, source) if not path.is_file()]
+    version_cs = packaging / "version.g.cs"
+    missing = [str(path) for path in (icon, manifest, source, version_cs)
+               if not path.is_file()]
     if missing:
         raise RuntimeError("cannot build the Windows host; missing "
                            + ", ".join(missing))
@@ -64,10 +102,16 @@ def build_host() -> Path:
         "/platform:x64",
         "/reference:System.Windows.Forms.dll",
         "/reference:System.Drawing.dll",
-        f"/win32icon={icon}",
-        f"/win32manifest={manifest}",
-        f"/out={dest}",
+        # csc wants a colon here. With `=` it answers `fatal error CS2007:
+        # Unrecognized option: '/win32icon=...'`, which meant `vodpipe install`
+        # could not compile the host at all -- the exe in the tree had been
+        # built by packaging/build.cmd, which had it right, and `ensure_host`
+        # never asked for a rebuild, so nothing surfaced the breakage.
+        f"/win32icon:{icon}",
+        f"/win32manifest:{manifest}",
+        f"/out:{dest}",
         str(source),
+        str(version_cs),
     ]
     LOG.info("compiling Windows host: %s", dest)
     completed = subprocess.run(argv, capture_output=True, text=True)
@@ -82,11 +126,14 @@ def build_host() -> Path:
 
 
 def ensure_host() -> Path:
+    """The compiled host, rebuilt if any of its inputs is newer than it."""
     dest = host_path()
-    source = APP_ROOT / "packaging" / "host.cs"
-    if dest.is_file() and source.is_file():
-        if dest.stat().st_mtime >= source.stat().st_mtime:
-            return dest
+    if not dest.is_file():
+        return build_host()
+    built = dest.stat().st_mtime
+    present = [path for path in build_inputs() if path.is_file()]
+    if present and all(built >= path.stat().st_mtime for path in present):
+        return dest
     return build_host()
 
 

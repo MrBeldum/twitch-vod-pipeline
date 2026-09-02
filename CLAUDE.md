@@ -305,6 +305,33 @@ Implementation notes worth knowing before changing anything:
   seven-section report in eight turns and about four minutes. A report already on
   disk is kept even when the CLI then exits non-zero: the expensive part is done,
   and discarding it over a missing "DONE" would throw the whole call away.
+- **Every icon is generated from `docs/logo.png`; none of them is edited by hand.**
+  *2026-09-02, after replacing the logo changed the README and nothing else.*
+  `packaging/prebuild.py` writes `vodpipe.ico`, `icon-16/32/48/256.png`,
+  `static/favicon.ico` and `static/icon.png` from that one file, and records the
+  source's sha256 in `packaging/icons.stamp` so a test can say "the icons are
+  stale" exactly. It also writes `version.g.cs` from `vodpipe.__version__`,
+  which used to be a literal `1.0.0` in `host.cs` and stayed that way through
+  1.0.1. Both run before every compile, from `vodpipe install` and from
+  `build.cmd`. **Four separate faults were in the way of a new icon and not one
+  of them said anything** -- they are worth knowing because each is a build
+  producing the wrong artifact in silence:
+  - the icons were six hand-exported files with no declared source, so the
+    `.ico` Windows actually shows was simply older artwork;
+  - `ensure_host` compared the exe against `host.cs` alone, so a changed icon
+    never triggered a rebuild. `build_inputs()` is now the list, and the icon is
+    in it because `/win32icon` makes it a compile input;
+  - `build_host` passed csc `/win32icon=...`, which the .NET Framework compiler
+    rejects with `fatal error CS2007`, so **`vodpipe install` could not compile
+    the host at all**. The exe in the tree had been built by `build.cmd`, which
+    used a colon and was right; because `ensure_host` never asked for a rebuild,
+    the broken path was never exercised. Two build routes that differ is the
+    real defect; they now agree;
+  - and `Install()` did not `SHChangeNotify`, so the shell kept drawing the
+    cached icon for a path whose exe had changed underneath it.
+  `static/icon.svg` was a seventh, hand-drawn mark that matched neither the
+  logo nor the `.ico`; it is retired, and the dashboard uses the generated PNG
+  and ICO. `tests/test_packaging.py` covers all of this.
 - **The desktop window is Chromium or Chrome, never Edge.** `find_app_browser`
   searches a bundled `vendor/chromium`, then Chromium, then Google Chrome.
   `msedge.exe` is not a candidate. The compiled Windows host is `VODPipeline.exe`
