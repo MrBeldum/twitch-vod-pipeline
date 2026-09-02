@@ -757,6 +757,9 @@ const SETTINGS_SCHEMA = [
     { path: 'summary.max_tokens', label: 'Maximum report output tokens', type: 'number' },
     { path: 'summary.max_retries', label: 'Report attempts', type: 'number',
       desc: 'Tries per report, sharing one timeout. A single refusal should not lose the report.' },
+    { path: 'summary.max_turns', label: 'Grok agent turns', type: 'number',
+      desc: 'Grok only. It reads the transcript as a file and writes the report as a file, '
+            + 'which takes about eight turns on a two-hour chunk. Claude Code ignores this.' },
   ]},
   { title: 'Chat', fields: [
     { path: 'chat.enabled', label: 'Download Twitch chat', type: 'checkbox',

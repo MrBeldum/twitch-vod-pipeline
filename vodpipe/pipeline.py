@@ -1470,7 +1470,18 @@ class Pipeline:
                     session, chunk, summary_status=SKIPPED,
                     summary_error=f"no report: {reason}")
             elif queue:
-                self._queue_summary(session, chunk)
+                # Chat-gated, exactly as the finalisation path is. Going
+                # straight to `_queue_summary` here is what made every chunk of
+                # the 2026-09-02 recording pay for two reports: a boundary
+                # stitch changes the generation of *both* chunks it touches, and
+                # the newer one's chat job is still running at that moment, so
+                # the first report was written without the audience in it and
+                # immediately superseded when chat landed. `_capture_chunk_chat`
+                # re-queues from its `finally`, so deferring here loses nothing.
+                if self._maybe_queue_summary(session, chunk) is None:
+                    self.store.update_chunk(
+                        session, chunk, summary_status=PENDING,
+                        summary_error="")
             else:
                 self.store.update_chunk(
                     session, chunk, summary_status=PENDING,

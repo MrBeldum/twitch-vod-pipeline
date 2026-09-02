@@ -313,6 +313,7 @@ SCHEMA: dict[str, Callable[[Any, str], Any]] = {
     "summary.timeout_seconds": _number(10, 7200),
     "summary.max_tokens": _number(256, 200000, integer=True),
     "summary.max_retries": _number(1, 10, integer=True),
+    "summary.max_turns": _number(2, 200, integer=True),
     "summary.min_words": _number(0, 100000, integer=True),
 
     "chat.enabled": _boolean,

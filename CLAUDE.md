@@ -72,6 +72,28 @@ explain this** -- a logic bug is systematic, and this is one wrong value in 310,
 recurs, run a memory test before reading any more code. What the pipeline can do about it
 is detect it, which is what it now does.
 
+**Fourth live test, 2026-09-02 (examplechannel, 5 chunks, ~8.5 hours).** The capture half was
+perfect and the delivery half produced nothing: five masters, five proxies, five complete
+transcripts (~62,000 words, every seam stitched), chat for all five -- and **zero
+reports**, fourteen attempts, every one of them `grok -p failed (1): Max turns reached`.
+Both defects are in `tests/test_live_failures_20260902.py`:
+
+| Symptom in the log | Root cause | Cost |
+|---|---|---|
+| `grok -p failed (1): Max turns reached` ×14 | `grok -p` offloads a prompt over ~24 KB to a file the model must `read_file`; `--max-turns 1` spent the only turn on the read | every report of every chunk, for the whole recording |
+| two reports queued per chunk, eight seconds apart | a boundary stitch re-queued through `_queue_summary`, bypassing the chat gate `_maybe_queue_summary` applies | a doubled engine bill, and a chat-less report whenever the second attempt lost |
+
+**The lesson is the one this codebase keeps relearning from the other side.** The
+standing failure mode here has been *a validator stricter than reality* -- three of the
+four 2026-08-16 defects were that. This is its mirror: **a caller whose model of the tool
+was simpler than the tool.** `--max-turns 1`, `--tools ""` and `--output-format plain`
+all describe a completion endpoint, and `grok -p` is an agent runtime; each setting was
+not merely suboptimal but actively wrong, and the first of them made success impossible
+rather than unlikely. Nothing in a fixture would have caught it, because the fixture
+would have been written against the same wrong model. What catches it is asking the tool
+what it actually does -- the tool list came from a `--output-format streaming-json`
+handshake, and the offload came from probing where a prompt stops arriving intact.
+
 **Editing the output in Premiere, 2026-08-17.** A finished chunk was imported into
 Premiere, and one feature did not work: *delete all fillers* reported nothing to delete
 against a transcript carrying 397 valid `filler` tags. Filler tagging was **cancelled**
@@ -247,9 +269,42 @@ Implementation notes worth knowing before changing anything:
     read by the dashboard, recovery, the API and the job, which must not disagree.
   What survived is the retry below, which is the part that was earning its keep.
   **`grok-cli` is a second subscription CLI, added later.** Blank `summary.model`
-  means the Grok CLI default, which as of CLI 1.0.5 is **Grok 4.6** (usage id
+  means the Grok CLI default, which as of CLI 1.0.13 is **Grok 4.6** (usage id
   `grok-4.6-build`). The old TUI alias `grok-build` is an unknown model id and is
   rewritten to blank by `schema.RETIRED_MODELS`. Do not pass `-m grok-build`.
+- **`grok -p` is an agent and is asked as one; `claude -p` is a completion and is
+  asked as one. Do not make the two argvs look alike.** *CORRECTED 2026-09-02 --
+  the whole reason that recording produced no reports.* Grok's CLI **offloads**
+  any `--prompt-file` over roughly 24 KB: the prompt is not in the conversation,
+  the model gets a stub (`Full request offloaded to file`) and has to `read_file`
+  its way to the request. Every real transcript is ~104 KB, so with `--max-turns 1`
+  the one turn went on the read and the run was cancelled before an answer existed.
+  Certain, not intermittent. Three further faults sat behind it, each of which
+  would have spoiled a run that got past the first:
+  - **`--tools ""` restricts nothing for Grok.** An empty allowlist reads as
+    "unset", so all 26 built-ins stayed live -- `run_terminal_command`,
+    `spawn_subagent`, `image_gen` -- plus **297** Premiere Pro and After Effects
+    MCP tools adopted from the Claude Code configuration on this machine. The
+    allowlist must be non-empty, and the `GROK_CLAUDE_*_ENABLED` env switches are
+    what keep another application's MCP servers out. **`claude --tools ""` is not
+    the same and is correct as it stands** -- it answers `NO TOOLS`, verified --
+    so do not "fix" the Claude argv by analogy with this one.
+  - **`--output-format plain` prints every assistant message.** stdout is the
+    model's narration run together with the answer, so a *successful* run under
+    the old argv would have published "I'll start by reading..." as the opening of
+    the report. `json` carries the same text plus `stopReason`, which is what lets
+    a max-turns exit be named instead of reported as a bare non-zero exit.
+  - **"Write `report.md`" was prose in a shared prompt and a task to an agent.**
+    It now lives in `GrokCliModel.DELIVERY`, where it is true, and
+    `summarize.INSTRUCTION` stays transport-neutral.
+  So the transport hands Grok a throwaway directory holding `transcript.md`, an
+  instruction small enough to arrive inline, four tools (`read_file`, `list_dir`,
+  `grep`, `write`) and `summary.max_turns` (default 40); the model writes
+  `report.md` and the pipeline reads that file back. The reference c000 transcript
+  -- 14,431 words, the one that failed fourteen times -- returns a complete
+  seven-section report in eight turns and about four minutes. A report already on
+  disk is kept even when the CLI then exits non-zero: the expensive part is done,
+  and discarding it over a missing "DONE" would throw the whole call away.
 - **The desktop window is Chromium or Chrome, never Edge.** `find_app_browser`
   searches a bundled `vendor/chromium`, then Chromium, then Google Chrome.
   `msedge.exe` is not a candidate. The compiled Windows host is `VODPipeline.exe`
@@ -549,7 +604,7 @@ Implementation notes worth knowing before changing anything:
 | 3 | Early cut | **Non-destructive snapshot** — recording continues untouched. |
 | 4 | Control surface | **Local web dashboard** on localhost. |
 | 5 | Summary style | **Editor report.** Written from the angle of an editor cutting Twitch into YouTube (long-form and Shorts): timeline, best moments, skip list, titles. Chat evidence is used for what *landed*, the transcript for what was *said*. The 2026-08-19 "objective rundown only" constraint was withdrawn for this deliverable. |
-| 6 | Summary engine | **`claude -p` (Claude Code) or `grok -p` (Grok 4.6 by default).** Paid HTTP APIs (Anthropic/Kimi/DeepSeek/OpenAI) were added 2026-08-18 and removed 2026-08-19 after they failed on the ordinary case. Do not re-add a paid API; a second subscription CLI is the shape that works. `none` switches reports off. Do not pass `-m grok-build` — the CLI rejects it. |
+| 6 | Summary engine | **`claude -p` (Claude Code) or `grok -p` (Grok 4.6 by default).** Paid HTTP APIs (Anthropic/Kimi/DeepSeek/OpenAI) were added 2026-08-18 and removed 2026-08-19 after they failed on the ordinary case. Do not re-add a paid API; a second subscription CLI is the shape that works. `none` switches reports off. Do not pass `-m grok-build` — the CLI rejects it. The two are asked in **different shapes**: Claude is a completion over stdin, Grok is an agent handed `transcript.md` that writes `report.md`. Do not unify the argvs — see the 2026-09-02 note. |
 | 7 | Channels | **Arbitrary, added at runtime. Do not hardcode any channel.** The tool is not written for a particular streamer, and no channel name belongs in the source. |
 | 8 | Storage | Masters → Desktop, kept until manually cleared. Proxies → auto-deleted after 1 day. All adjustable. |
 | 9 | Language | Python for new code. A retired C#/.NET predecessor exists but is not published. |

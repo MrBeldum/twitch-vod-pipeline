@@ -36,7 +36,7 @@ You are given:
    copypasta, clip-calls, shock) with sample messages. Chat is evidence of what
    LANDED with the audience, not a substitute for the transcript.
 
-Write `report.md` in Markdown. Be specific. Use the timestamps you were given.
+Write the report in Markdown. Be specific. Use the timestamps you were given.
 Sound like an editor talking to another editor, not like a recap bot and not
 like marketing copy.
 
@@ -75,7 +75,7 @@ who did not watch live. Timestamps.
 ## Chat notes
 Only if chat data was provided. What the chat tells you that the transcript
 does not: in-jokes, a catchphrase that hit, a controversy, a raid. Do not
-restated the moment list.
+restate the moment list.
 
 ## Titles, chapters, thumbnails
 Three title options (YouTube, not Twitch). Chapter marks if the segment can
@@ -88,6 +88,7 @@ Rules:
 - Transcription is automatic and imperfect. One odd word is not a bit.
 - If a passage is garbled, say so rather than guessing.
 - Output only the Markdown report. No preamble, no sign-off.
+- The report begins with the `## Overview` heading. Nothing precedes it.
 """
 
 

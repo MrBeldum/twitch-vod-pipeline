@@ -444,18 +444,32 @@ A report is one background call per chunk. Two engines, both local subscription 
 | `grok-cli` | your Grok subscription, via `grok -p` (Grok 4.6 unless you name another model) | the `grok` executable |
 | `none` | nothing — reports off | |
 
-`summary.model` is passed through as `--model`. Leave it blank: Claude Code picks from
-the subscription; Grok uses its CLI default, which is currently **Grok 4.6**
+`summary.model` is passed through as the model flag. Leave it blank: Claude Code picks
+from the subscription; Grok uses its CLI default, which is currently **Grok 4.6**
 (reported in usage as `grok-4.6-build`). The old alias `grok-build` is not a valid
-model id on Grok CLI 1.0.5 and is rewritten to blank on load.
+model id on Grok CLI and is rewritten to blank on load.
 
-For Claude Code the transcript arrives on **stdin**. Grok Build does not read stdin —
-the prompt is written to a temp file and passed as `--prompt-file`, with `--cwd` pointed
-at an empty directory so Grok does not walk this repository. A two-hour transcript is
-far past the Windows command-line length limit either way. The report is whatever the
-CLI writes to **stdout**. A failed attempt is retried up to `summary.max_retries` times
-(default 3), all attempts sharing the one `summary.timeout_seconds` deadline — a
-non-zero exit is not classifiable from outside, so the retry is unconditional and bounded.
+**The two engines are asked in different shapes, because they are different things.**
+Claude Code is a completion: the transcript arrives on **stdin**, tools are off, and the
+report is what it writes to **stdout**. Grok Build is an *agent*, and asking it as though
+it were a completion does not work — above roughly 24 KB the CLI does not put a
+`--prompt-file` in the conversation at all. It offloads the prompt to a file and hands
+the model a stub to read its way out of, so a two-hour transcript can only be answered by
+a model that is allowed to read a file and given the turns to do it. So Grok is handed a
+throwaway working directory containing `transcript.md`, an instruction small enough to
+arrive inline, and exactly four tools (`read_file`, `list_dir`, `grep`, `write`); it
+writes `report.md` and the pipeline reads that file back. `summary.max_turns` (default
+40) bounds the loop; the reference two-hour chunk uses eight turns.
+
+A failed attempt is retried up to `summary.max_retries` times (default 3), all attempts
+sharing the one `summary.timeout_seconds` deadline — a non-zero exit is not classifiable
+from outside, so the retry is unconditional and bounded.
+
+**Why Grok gets a file instead of stdout.** Its headless mode prints *every* assistant
+message, so stdout is the model's narration (“I'll start by reading the transcript…”)
+run together with the answer. Reading the report back from the file the model was told to
+write is the only way to get the report without the process notes welded onto the front.
+See `models.GrokCliModel` for the recording that established this.
 
 **Paid HTTP APIs were tried and withdrawn.** On 2026-08-18 a seven-hour recording hit
 `You’ve hit your session limit` and lost that chunk’s report, so the engine was made
@@ -779,7 +793,12 @@ What happens when things go wrong, since a recorder is judged on its bad days:
   against your Claude subscription and therefore shares its usage limits, so a busy
   recording day can produce a transient refusal; one of those should not be the end of
   the rundown. If every attempt fails, the error shown is whatever the engine actually
-  said, on stdout or stderr.
+  said, on stdout or stderr — and for `grok -p`, why it stopped (`stopReason`) as well.
+- **A report queued for a stitched chunk waits for its chat.** Stitching a chunk boundary
+  changes the transcript generation of *both* chunks it touches, which makes the older
+  report stale. The re-queue goes through the same chat gate as ordinary finalisation, so
+  a chunk whose chat is still downloading is not reported twice — once without the
+  audience and again with it.
 - **A network stall does not kill the recording.** Only video and audio are captured.
   Twitch also sends a `timed_id3` metadata stream whose timestamps are not corrected
   across an HLS sequence gap; copying it meant one dropped connection could abort ffmpeg

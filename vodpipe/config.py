@@ -164,6 +164,11 @@ DEFAULTS: dict[str, Any] = {
         # user's subscription quota -- so a single transient refusal must not be
         # the end of it.
         "max_retries": 3,
+        # Turn budget for an agent-shaped engine. `grok -p` is handed the
+        # transcript as a file and writes the report as a file, which took 8
+        # turns on the reference chunk; the ceiling is generous because one
+        # turn too few discards the whole call. `claude -p` ignores this.
+        "max_turns": 40,
         # Below this many words there is nothing to write a report about.
         "min_words": 25,
         "max_tokens": 8000,
