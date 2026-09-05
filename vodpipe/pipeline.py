@@ -40,6 +40,8 @@ from .disk import DiskBudget, DiskReservation
 from .exports import (
     EDIT_OWNED,
     GENERATION_FILES,
+    MANIFEST_NAME,
+    PUBLISHED_EXPORTS,
     SOURCE_DIR,
     publication_is_consistent,
     split_publication,
@@ -108,12 +110,10 @@ from .summarize import (
     build_summarizer,
     report_generation,
     retire_report,
-    rundown_generation,
     write_report,
-    write_rundown,
 )
 from .transcribe import SHORT_READ_TOLERANCE, RollingTranscriber
-from .transcript import load_words, publish_text_sets
+from .transcript import PUBLICATION_MARKER, load_words, publish_text_sets
 from .util import (
     LOG,
     Tools,
@@ -391,6 +391,10 @@ class Pipeline:
         self._snapshot_admission = threading.Lock()
         self._snapshot_reservations: dict[str, DiskReservation] = {}
         self._snapshot_reservation_guard = threading.Lock()
+        # Report eligibility per chunk, keyed on the state of the files it is
+        # read from. See _summary_eligibility.
+        self._eligibility_cache: dict[str, tuple[tuple, tuple[bool, str]]] = {}
+        self._eligibility_guard = threading.Lock()
         self.disk_budget = DiskBudget(
             config.masters_root,
             lambda: int(float(self.config.get(
@@ -1389,9 +1393,16 @@ class Pipeline:
             return False, "the grok executable is unavailable"
         return False, f"unknown report engine {provider}"
 
-    def _summary_source(self, session: Session,
-                        chunk: Chunk) -> tuple[_SummarySource | None, str]:
-        """The one eligibility check used by jobs, recovery, API, and UI."""
+    def _summary_source(self, session: Session, chunk: Chunk, *,
+                        with_body: bool = False,
+                        ) -> tuple[_SummarySource | None, str]:
+        """The one eligibility check used by jobs, recovery, API, and UI.
+
+        `with_body` renders the model input as well. Only the report job wants
+        it; every other caller asks whether a report *could* be written, and
+        rendering a two-hour transcript to answer that was most of the cost of
+        answering it.
+        """
         if chunk.transcript_status != DONE:
             return None, "the transcript is not complete"
 
@@ -1421,8 +1432,47 @@ class Pipeline:
             return None, "words.json has no transcript generation"
         return _SummarySource(
             generation=generation,
-            body=build_model_input(words, chunk.session_offset),
+            body=(build_model_input(words, chunk.session_offset)
+                  if with_body else ""),
         ), ""
+
+    def _summary_eligibility(self, session: Session,
+                             chunk: Chunk) -> tuple[bool, str]:
+        """`_summary_source`'s verdict for the dashboard, cached on file state.
+
+        The state poll runs every two seconds and asks this for every chunk of
+        every listed session. Uncached, each answer re-read and re-parsed
+        `words.json` -- a megabyte for a two-hour chunk -- and re-checked the
+        export set beside it, so a dashboard with forty sessions open was
+        parsing well over a hundred transcripts per poll. The files a verdict
+        depends on are stat'd instead, and the verdict is recomputed only when
+        one of them, or the chunk's own transcript state, has changed. Job and
+        recovery paths keep calling `_summary_source` directly: they run once,
+        and they must see the file as it is at that instant.
+        """
+        directory = self.transcriber.output_dir(session, chunk)
+        fingerprint: list[Any] = [
+            chunk.transcript_status, chunk.session_offset,
+            int(self.config.get("summary.min_words", 25)),
+        ]
+        for name in (*PUBLISHED_EXPORTS, f"{SOURCE_DIR}/{MANIFEST_NAME}",
+                     PUBLICATION_MARKER):
+            try:
+                stat = (directory / name).stat()
+                fingerprint.append((name, stat.st_mtime_ns, stat.st_size))
+            except OSError:
+                fingerprint.append((name, None))
+        key = f"{session.session_id}:{chunk.label}"
+        stamp = tuple(fingerprint)
+        with self._eligibility_guard:
+            cached = self._eligibility_cache.get(key)
+            if cached is not None and cached[0] == stamp:
+                return cached[1]
+        source, reason = self._summary_source(session, chunk)
+        verdict = (source is not None, reason)
+        with self._eligibility_guard:
+            self._eligibility_cache[key] = (stamp, verdict)
+        return verdict
 
     def _current_export_generation(self, session: Session, chunk: Chunk) -> str:
         """Current durable export identity, independent of artifact state."""
@@ -3202,7 +3252,7 @@ class Pipeline:
                                     summary_error="")
             return
 
-        source, reason = self._summary_source(session, chunk)
+        source, reason = self._summary_source(session, chunk, with_body=True)
         if source is None:
             # AUD2-052: the transcript is no longer eligible (retranscribed to
             # empty, or gone). Reach a terminal state and retire any stale report
@@ -4633,7 +4683,7 @@ class Pipeline:
             "responses, the chat, and the export manifest.",
             "",
             "| Chunk | Starts at | Duration | Size | Resolution | Master | Proxy | Transcript | Chat | Report |",
-            "|---|---|---|---|---|---|---|---|---|",
+            "|---|---|---|---|---|---|---|---|---|---|",
         ]
         for chunk in sorted(session.chunks, key=lambda item: item.index):
             transcript_dir = session.path / "transcripts" / chunk.label
@@ -4707,8 +4757,8 @@ class Pipeline:
             payload["externally_owned"] = (
                 session.session_id in self._externally_owned_sessions)
             for item, chunk_payload in zip(session.chunks, payload["chunks"]):
-                source, reason = self._summary_source(session, item)
-                chunk_payload["summary_eligible"] = source is not None
+                eligible, reason = self._summary_eligibility(session, item)
+                chunk_payload["summary_eligible"] = eligible
                 chunk_payload["summary_eligibility_reason"] = reason
             recorder = self._active_recorder_for(session)
             if recorder is not None:

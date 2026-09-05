@@ -6,6 +6,48 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-09-05
+
+macOS and Linux, and what a full-codebase audit found.
+
+### Added
+
+- **macOS and Linux run the pipeline and dashboard.** "Show in folder" uses Finder
+  (`open -R`) or `xdg-open`; tool discovery checks Homebrew, MacPorts, `~/.local/bin` and
+  `~/.grok/bin` when PATH does not have the tool; `h264_videotoolbox` is probed for proxies
+  after the AMD/NVIDIA/Intel encoders and can be chosen explicitly. On macOS the app
+  command opens the system browser rather than a Chrome window, because Chrome there
+  outlives its last window and the pipeline would keep recording behind a closed one.
+  CI runs the full suite on `macos-latest` and `ubuntu-latest`.
+- **A pip install keeps its data in the per-user data directory** (`%LOCALAPPDATA%\vodpipe`,
+  `~/Library/Application Support/vodpipe`, `~/.local/share/vodpipe`) instead of inside
+  `site-packages`. A clone still keeps `config.json` beside the code, and an existing
+  install that already has one there is left alone. `VODPIPE_HOME` overrides either.
+
+### Fixed
+
+- **The chunk progress bar never rendered.** The dashboard's Content Security Policy
+  blocks inline `style` attributes, and the bar's width was one; it is set through the
+  CSSOM now, and a test refuses any `style:` attribute in `app.js`.
+- **The dashboard poll re-read every transcript every two seconds.** Working out whether
+  a chunk is eligible for a report loaded and rendered its whole `words.json` — for every
+  chunk of every session, on every 2 s state poll. The verdict is cached against the
+  size and mtime of the files it is read from, and the model input is only rendered for
+  the report job itself.
+- **A half-open chat socket was never noticed.** The IRC reader's 30 s receive timeout
+  just looped, so a connection the network had silently dropped stayed "connected" for the
+  rest of the recording with no chat captured. Twitch pings every five minutes; after
+  330 s of silence the reader pings once, and after 400 s it drops the socket so the
+  existing reconnect loop takes over.
+- **A corrupt `config.json` produced a traceback** instead of the one-line message every
+  other configuration error gets; the CLI now reports it and exits 2.
+- **`vodpipe app --verbose` was not verbose.** Adding the log file re-initialised logging
+  at INFO.
+- `index.md`'s session table had a separator one column short of its header, so markdown
+  renderers did not draw it as a table.
+- `snapshot.py` referenced `Sequence` without importing it (masked by postponed
+  annotations); unused imports and locals removed across five modules.
+
 ## [1.0.2] — 2026-09-02
 
 The report engine, which had never once produced a report through `grok -p`, and the
@@ -121,5 +163,6 @@ the full suite of ~960 tests passes.
 - Full CLI: `doctor`, `record`, `vod`, `snapshot`, `transcribe`, `republish`, `sessions`,
   `dashboard`, `app`, `install`.
 
+[1.1.0]: https://github.com/MrBeldum/twitch-vod-pipeline/releases/tag/v1.1.0
 [1.0.2]: https://github.com/MrBeldum/twitch-vod-pipeline/releases/tag/v1.0.2
 [1.0.0]: https://github.com/MrBeldum/twitch-vod-pipeline/releases/tag/v1.0.0

@@ -911,6 +911,32 @@ class SessionIndexRefreshTests(unittest.TestCase):
         self.assertEqual(cells[3], "1.5 KB")
         self.assertEqual(cells[4], "1920x1080")
 
+    def test_index_table_separator_matches_the_header(self):
+        # A separator one column short is not a table to a markdown renderer.
+        self.pipeline._refresh_session_index(self.session)
+        text = (self.session.path / "index.md").read_text(encoding="utf-8")
+        lines = text.splitlines()
+        header = next(i for i, line in enumerate(lines) if "| Size |" in line)
+        self.assertEqual(lines[header].count("|"), lines[header + 1].count("|"))
+        self.assertEqual(lines[header].count("|"), len(self.index_cells()[1]) + 1)
+
+    def test_report_eligibility_is_not_recomputed_while_the_files_are_unchanged(self):
+        # The 2 s dashboard poll asks this for every chunk of every session;
+        # it used to re-read and re-render every words.json each time.
+        with patch.object(self.pipeline, "_summary_source",
+                          return_value=(None, "no transcript")) as source:
+            first = self.pipeline._summary_eligibility(self.session, self.chunk)
+            second = self.pipeline._summary_eligibility(self.session, self.chunk)
+            self.assertEqual(first, second, (False, "no transcript"))
+            self.assertEqual(source.call_count, 1)
+
+            marker = (self.session.path / "transcripts" / "c000"
+                      / "source" / "words.json")
+            marker.parent.mkdir(exist_ok=True)
+            marker.write_text("{}", encoding="utf-8")
+            self.pipeline._summary_eligibility(self.session, self.chunk)
+            self.assertEqual(source.call_count, 2)
+
     def test_proxy_success_and_failure_refresh_the_final_index(self):
         def succeed(_job, session, chunk):
             self.pipeline.store.update_chunk(

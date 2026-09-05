@@ -170,6 +170,22 @@ class SettingsSchemaTests(unittest.TestCase):
         duplicates = sorted({path for path in paths if paths.count(path) > 1})
         self.assertEqual(duplicates, [])
 
+    def test_encoder_options_match_the_schema(self):
+        from vodpipe.schema import SCHEMA
+
+        block = re.search(r"path: 'proxies.encoder'.*?options: \[(.*?)\]", JS)
+        self.assertIsNotNone(block)
+        offered = re.findall(r"'([\w]+)'", block.group(1))
+        self.assertEqual(offered, list(SCHEMA["proxies.encoder"].options))
+
+
+class ContentSecurityPolicyTests(unittest.TestCase):
+    def test_no_inline_style_attributes(self):
+        """`default-src 'self'` blocks style attributes, so `el(..., {style})`
+        renders nothing: the chunk progress bar shipped at zero width."""
+        self.assertNotRegex(JS, r"style:\s")
+        self.assertNotIn("setAttribute('style'", JS)
+
 
 if __name__ == "__main__":
     unittest.main()

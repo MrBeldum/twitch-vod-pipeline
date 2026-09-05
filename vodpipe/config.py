@@ -22,7 +22,33 @@ from .schema import ConfigError, validate
 from .util import atomic_write_json
 
 APP_ROOT = Path(__file__).resolve().parent.parent
-CONFIG_PATH = APP_ROOT / "config.json"
+
+
+def _data_root() -> Path:
+    """Where config.json, scratch and logs live.
+
+    A checkout keeps them beside the code, as it always has. A pip install
+    puts APP_ROOT inside site-packages, which is no place for a file holding
+    an API key (and may not be writable), so it uses the platform's per-user
+    data directory instead. VODPIPE_HOME overrides both.
+    """
+    override = os.environ.get("VODPIPE_HOME")
+    if override:
+        return Path(override).expanduser()
+    if (APP_ROOT / "pyproject.toml").exists() or (APP_ROOT / "config.json").exists():
+        return APP_ROOT
+    home = Path(os.path.expanduser("~"))
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA") or home / "AppData" / "Local")
+    elif sys.platform == "darwin":
+        base = home / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME") or home / ".local" / "share")
+    return base / "vodpipe"
+
+
+DATA_ROOT = _data_root()
+CONFIG_PATH = DATA_ROOT / "config.json"
 
 # Keys whose values are masked whenever config is handed to the browser.
 SECRET_KEYS = {"deepgram_api_key", "twitch_oauth_token"}
@@ -42,7 +68,7 @@ DEFAULTS: dict[str, Any] = {
         # Masters land on the Desktop and stay until manually cleared.
         "masters_root": _default_masters_root(),
         # Scratch space for audio slices. Small, continuously recycled.
-        "work_root": str(APP_ROOT / ".work"),
+        "work_root": str(DATA_ROOT / ".work"),
         "censor_master_list": str(
             Path(os.path.expanduser("~")) / "Desktop" / "censored_words_master.txt"
         ),

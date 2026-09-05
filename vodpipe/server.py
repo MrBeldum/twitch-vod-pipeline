@@ -15,6 +15,7 @@ import queue
 import secrets
 import socket
 import subprocess
+import sys
 import threading
 import time
 import webbrowser
@@ -83,6 +84,20 @@ _OVERLOAD_RESPONSE = (
     + b"Cache-Control: no-store\r\nConnection: close\r\n\r\n"
     + _OVERLOAD_BODY
 )
+
+def _reveal_command(target: Path) -> list[str]:
+    """The platform's "show this in the file manager" argv.
+
+    Explorer and Finder can select a file; xdg-open can only open its folder.
+    """
+    if sys.platform == "win32":
+        return (["explorer", str(target)] if target.is_dir()
+                else ["explorer", "/select,", str(target)])
+    if sys.platform == "darwin":
+        return (["open", str(target)] if target.is_dir()
+                else ["open", "-R", str(target)])
+    return ["xdg-open", str(target if target.is_dir() else target.parent)]
+
 
 # Hostnames a browser may legitimately use to reach a loopback-bound server.
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -735,12 +750,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             target = self._resolve_artifact(str(artifact_id))
         else:
             target = self._safe_path(str(body.get("path", "")))
-        if os.name != "nt":
-            raise ApiError("reveal is only wired up for Windows Explorer")
-        if target.is_dir():
-            subprocess.Popen(["explorer", str(target)])
-        else:
-            subprocess.Popen(["explorer", "/select,", str(target)])
+        subprocess.Popen(_reveal_command(target))
         return {"ok": True}
 
     # -- helpers -----------------------------------------------------------

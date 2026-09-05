@@ -644,8 +644,16 @@ Implementation notes worth knowing before changing anything:
 
 The pipeline is developed and proven on **Windows 11** with **Python 3.14**, and the
 packaging (`VODPipeline.exe`, Start Menu registration, the Chromium app window) is
-Windows-specific. The Python core is portable; nothing outside `winapp.py`, `app.py` and
-`packaging/` assumes Windows.
+Windows-specific. The Python core is portable, and since 1.1.0 the seams that were not
+take a platform branch: `server._reveal_command` (Explorer / Finder / `xdg-open`),
+`app.find_app_browser` (always the system browser on macOS, because Chrome there
+outlives its last window and "window closed" cannot be the shutdown signal),
+`util._POSIX_HINTS` (Homebrew, MacPorts, `~/.local/bin`, `~/.grok/bin`),
+`h264_videotoolbox` in the proxy encoder probe, and `config.DATA_ROOT` (a pip install
+keeps `config.json`/`.work`/`logs` in the per-user data directory, a clone beside the
+code, `VODPIPE_HOME` overrides both). CI runs the full suite on macOS and Ubuntu as well
+as Windows; `tests/test_cross_platform.py` covers the branches. No real recording has
+been made on macOS.
 
 Required on `PATH` (or set explicitly under `tools.*` in `config.json`):
 

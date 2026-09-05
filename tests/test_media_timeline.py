@@ -9,7 +9,7 @@ from __future__ import annotations
 import shutil
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from vodpipe.media import (
     extract_audio_slice,
@@ -165,7 +165,9 @@ class FFConcatQuotingTests(unittest.TestCase):
 
     def test_backslashes_never_reach_the_concat_list(self):
         """The tokenizer treats backslash as an escape, so separators must be `/`."""
-        self.assertNotIn("\\", ffconcat_quote(Path(r"C:\vods\sub\a.ts")))
+        # PureWindowsPath: on POSIX a backslash is a legal filename character,
+        # and this test is about Windows separators, not Linux filenames.
+        self.assertNotIn("\\", ffconcat_quote(PureWindowsPath(r"C:\vods\sub\a.ts")))
 
     def test_apostrophe_is_escaped(self):
         quoted = ffconcat_quote(Path("C:/Dan's/a.ts"))

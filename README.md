@@ -16,7 +16,7 @@
   <a href="https://pypi.org/project/vodpipe/"><img src="https://img.shields.io/pypi/v/vodpipe?label=pypi" alt="PyPI"></a>
   <img src="https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-3776ab.svg" alt="Python 3.12+">
   <img src="https://img.shields.io/badge/dependencies-none-success.svg" alt="No dependencies">
-  <img src="https://img.shields.io/badge/platform-Windows-0078d4.svg" alt="Windows">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078d4.svg" alt="Windows, macOS, Linux">
 </p>
 
 ---
@@ -53,8 +53,10 @@ good enough to cut from.
 | **`claude` or `grok` CLI** | for reports | Optional. Uses a subscription you already have; no API key. |
 | **A Twitch OAuth token** | optional | Enables the ad-free path if you have Turbo. |
 
-Windows is the supported and tested platform. `python -m vodpipe doctor` tells you what it
-can find and what is missing.
+Windows is the platform it is proven on against real recordings; macOS and Linux run the
+same pipeline and dashboard from a terminal, with the same test suite in CI. The desktop
+app window and Start Menu registration are Windows-only. `python -m vodpipe doctor` tells
+you what it can find and what is missing.
 
 ## Contents
 
@@ -88,8 +90,22 @@ vodpipe dashboard
 The wheel carries the pipeline and the dashboard, and no dependencies — there is nothing
 for pip to resolve. It does **not** carry `packaging/`, so `vodpipe install` has no
 `host.cs` to compile and says so; the Windows desktop app needs a clone. A pip install
-also keeps its `config.json`, `.work/` and `logs/` beside the installed package, so a
-virtualenv per install is the sane way to run it.
+keeps its `config.json`, `.work/` and `logs/` in the per-user data directory
+(`%LOCALAPPDATA%\vodpipe`, `~/Library/Application Support/vodpipe`, or
+`~/.local/share/vodpipe`); a clone keeps them beside the code. `VODPIPE_HOME` overrides
+either.
+
+On macOS or Linux, from a clone:
+
+```
+brew install ffmpeg streamlink        # or apt install ffmpeg && pipx install streamlink
+python3 -m vodpipe doctor
+python3 -m vodpipe dashboard          # opens the dashboard in your default browser
+```
+
+There is no app window there: `python3 -m vodpipe app` is the same as `dashboard`, and
+Ctrl+C stops it. Proxies use `h264_videotoolbox` on a Mac when `proxies.encoder` is
+`auto`, and `libx264` anywhere without a hardware encoder ffmpeg can drive.
 
 After `install`, Windows shows **VOD Pipeline** in the Start Menu and in
 Settings → Apps. Double-click `VODPipeline.exe`, or `Start VOD Pipeline.vbs`,
@@ -651,7 +667,8 @@ At roughly 7 GB/hr for 1080p60, the default floor leaves about 7 hours of headro
 
 ## Configuration
 
-Everything lives in `config.json` next to the app — gitignored, created on first save.
+Everything lives in `config.json` — next to the app in a clone, in the per-user data
+directory for a pip install (see Quick start) — gitignored, created on first save.
 `config.example.json` documents the common keys; the full set of defaults, with comments,
 is in `vodpipe/config.py`.
 
@@ -670,7 +687,7 @@ gone from the file after the next save.
 ## Tests
 
 ```
-C:\Python314\python.exe -m unittest discover -s tests -t .
+python -m unittest discover -s tests -t .
 ```
 
 Most are instant; the integration tests run the real pipeline against a synthetic stream —
@@ -845,6 +862,9 @@ What happens when things go wrong, since a recorder is judged on its bad days:
 - The dashboard has no authentication and therefore refuses to bind anywhere but
   loopback. It checks `Origin`/`Host` and requires JSON content type, which stops a
   malicious web page driving it, but anyone with an account on this machine can use it.
+- On macOS and Linux there is no desktop app: the dashboard runs in a terminal and opens
+  in your browser. "Show in folder" uses Finder or `xdg-open`; the latter cannot select
+  a file, so it opens the folder instead. Real recordings have only been run on Windows.
 
 ---
 

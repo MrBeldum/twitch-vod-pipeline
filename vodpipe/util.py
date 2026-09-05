@@ -41,6 +41,8 @@ class Tools:
     grok: str | None = None
 
 
+# Where installers put things when PATH was not updated (a shortcut-launched
+# app inherits a PATH the user's shell profile never touched).
 _WINDOWS_HINTS = {
     "ffmpeg": [r"C:\ffmpeg\bin\ffmpeg.exe"],
     "ffprobe": [r"C:\ffmpeg\bin\ffprobe.exe"],
@@ -54,6 +56,15 @@ _WINDOWS_HINTS = {
         r"C:\Users\%USERNAME%\.local\bin\grok.exe",
     ],
 }
+# Homebrew (Apple Silicon, then Intel), MacPorts, pipx/uv and the two CLIs'
+# own installers, none of which a Finder-launched process necessarily sees.
+_POSIX_HINTS = {
+    name: [f"/opt/homebrew/bin/{name}", f"/usr/local/bin/{name}",
+           f"/opt/local/bin/{name}", f"~/.local/bin/{name}"]
+    for name in ("ffmpeg", "ffprobe", "streamlink", "claude", "grok")
+}
+_POSIX_HINTS["grok"].insert(0, "~/.grok/bin/grok")
+_HINTS = _WINDOWS_HINTS if os.name == "nt" else _POSIX_HINTS
 
 
 def find_tool(name: str, override: str | None = None) -> str | None:
@@ -65,8 +76,8 @@ def find_tool(name: str, override: str | None = None) -> str | None:
     if found:
         return found
 
-    for hint in _WINDOWS_HINTS.get(name, []):
-        candidate = Path(os.path.expandvars(hint))
+    for hint in _HINTS.get(name, []):
+        candidate = Path(os.path.expanduser(os.path.expandvars(hint)))
         if candidate.exists():
             return str(candidate)
     return None

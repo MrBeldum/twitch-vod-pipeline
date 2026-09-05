@@ -225,7 +225,6 @@ def _classify(message: ChatMessage) -> tuple[ChatMessage, _Flags]:
     if CLIP_RE.search(text):
         flags.clip = True
     kind = (message.kind or "").lower()
-    msg_id = folded
     # USERNOTICE kinds we stored as text; raid/sub also travel as kind=system.
     if kind == "system" or "raid" in folded[:40]:
         flags.raid = True

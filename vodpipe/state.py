@@ -17,7 +17,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field, fields as dataclass_fields
 from pathlib import Path, PurePath
-from typing import Any, Iterable
+from typing import Any
 
 from .channels import InvalidChannel, parse_channel
 from .locks import ResourceLock

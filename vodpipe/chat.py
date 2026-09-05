@@ -22,7 +22,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlparse
@@ -48,6 +48,12 @@ VOD_JSON = "vod.json"
 # How far a VOD comment may sit past the requested end and still be kept. The
 # GraphQL page is not a precise trim.
 COMMENT_END_SLACK = 1.0
+
+
+# Twitch's server PINGs roughly every five minutes; silence past that is a
+# dead socket, not a quiet channel.
+IDLE_PING_SECONDS = 330.0
+IDLE_DISCONNECT_SECONDS = 400.0
 
 
 class ChatError(RuntimeError):
@@ -409,15 +415,28 @@ class LiveChatCapture:
             LOG.info("%s: joined Twitch chat as %s", self.channel, nick)
             tls.settimeout(30.0)
             buffer = b""
+            last_seen = time.monotonic()
+            pinged = False
             while not self._stop.is_set():
                 try:
                     chunk = tls.recv(4096)
                 except TimeoutError:
+                    # Twitch pings every ~5 minutes, so a longer silence means
+                    # a half-open socket; recv would wait on it forever. Ask
+                    # once, then give up and let the caller reconnect.
+                    idle = time.monotonic() - last_seen
+                    if idle >= IDLE_DISCONNECT_SECONDS:
+                        raise ChatError(f"IRC silent for {idle:.0f}s")
+                    if idle >= IDLE_PING_SECONDS and not pinged:
+                        _irc_send(tls, "PING :vodpipe")
+                        pinged = True
                     continue
                 except (OSError, ssl.SSLError):
                     if self._stop.is_set():
                         return
                     raise
+                last_seen = time.monotonic()
+                pinged = False
                 if not chunk:
                     raise ChatError("IRC connection closed")
                 buffer += chunk

@@ -13,7 +13,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, ContextManager, Iterable, Iterator
+from typing import Any, Callable, ContextManager, Iterable, Iterator, Sequence
 
 from .config import Config
 from .media import (

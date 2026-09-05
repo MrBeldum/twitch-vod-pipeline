@@ -19,15 +19,13 @@ from .config import CONFIG_PATH, Config
 from .pipeline import Pipeline
 from .server import serve
 from .snapshot import SnapshotRequest
+from .schema import ConfigError
 from .util import (
     LOG,
-    atomic_write_text,
     find_tool,
     free_bytes,
     human_bytes,
     resolve_tools,
-    run,
-    safe_name_component,
     setup_logging,
 )
 
@@ -170,11 +168,12 @@ def main(argv: list[str] | None = None) -> int:
         argv = list(argv) + ["app"]
     args = parser.parse_args(argv)
     setup_logging(verbose=args.verbose)
-
-    config = Config.load(args.config)
     command = args.command or "app"
 
     try:
+        # Inside the try: a corrupt or unreadable config.json is the commonest
+        # way to reach here, and it deserves one line, not a traceback.
+        config = Config.load(args.config)
         if command == "doctor":
             return cmd_doctor(config)
         if command == "app":
@@ -200,6 +199,9 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130
+    except ConfigError as exc:
+        LOG.error("configuration: %s", exc)
+        return 2
     except Exception as exc:
         LOG.error("%s", exc)
         return 1
@@ -656,7 +658,6 @@ def cmd_republish(config: Config, args) -> int:
 
     for session in sessions:
         for chunk in session.chunks:
-            directory = transcriber.output_dir(session, chunk)
             try:
                 mutation = ResourceLock(
                     chunk_lock_path(session.path, chunk.label),

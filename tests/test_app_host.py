@@ -19,7 +19,7 @@ class BrowserSelectionTests(unittest.TestCase):
         self.assertNotIn("\\edge\\", joined)
 
     def test_chromium_is_tried_before_chrome(self):
-        names = [os.path.normcase(path) for path in browser_candidates()]
+        names = [path.lower() for path in browser_candidates()]  # normcase is identity on POSIX
         chromium = next(i for i, name in enumerate(names) if "chromium" in name)
         chrome = next(i for i, name in enumerate(names)
                       if "google" in name and "chrome" in name)

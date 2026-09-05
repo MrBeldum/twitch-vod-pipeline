@@ -43,7 +43,7 @@ def probe_encoder(tools: Tools, preference: str = "auto") -> str:
             return cached
 
         chosen = "libx264"
-        for candidate in ("h264_amf", "h264_nvenc", "h264_qsv"):
+        for candidate in ("h264_amf", "h264_nvenc", "h264_qsv", "h264_videotoolbox"):
             probe = run(
                 [tools.ffmpeg, "-hide_banner", "-loglevel", "error",
                  "-f", "lavfi", "-i", "testsrc=size=640x360:rate=30:duration=2",
@@ -1028,6 +1028,11 @@ def make_proxy(
     elif encoder == "h264_nvenc":
         codec_args = ["-c:v", "h264_nvenc", "-preset", "p3",
                       "-rc", "constqp", "-qp", str(int(quality) + 2)]
+    elif encoder == "h264_videotoolbox":
+        # Apple's encoder has no CRF/QP mode worth using; a fixed bitrate is
+        # how it is driven. 3 Mbit/s is ample for a 540p proxy.
+        codec_args = ["-c:v", "h264_videotoolbox", "-b:v", "3M",
+                      "-profile:v", "main", "-realtime", "0"]
     else:
         codec_args = ["-c:v", encoder, "-b:v", "3M"]
 

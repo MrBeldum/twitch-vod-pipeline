@@ -297,9 +297,14 @@ function renderLive(data) {
       : 0;
     const chunkLength = (state.config?.recording?.chunk_seconds) || 7200;
     const progress = Math.min(100, (intoChunk / chunkLength) * 100);
+    // Set through the CSSOM, never as a `style` attribute: the page ships a
+    // `default-src 'self'` CSP, which blocks inline style attributes, so the
+    // attribute form rendered the chunk progress bar at zero width forever.
+    const fill = el('span');
+    fill.style.width = `${progress}%`;
 
     root.append(el('div', { class: 'live-session' }, [
-      el('div', { class: 'bar' }, [el('span', { style: `width:${progress}%` })]),
+      el('div', { class: 'bar' }, [fill]),
       el('div', { class: 'live-head' }, [
         el('div', { class: 'live-id' }, [
           isVod ? el('span', { class: 'badge on', text: 'VOD' }) : null,
@@ -725,7 +730,7 @@ const SETTINGS_SCHEMA = [
   { title: 'Proxies', fields: [
     { path: 'proxies.enabled', label: 'Generate proxies', type: 'checkbox' },
     { path: 'proxies.height', label: 'Proxy height (px)', type: 'number' },
-    { path: 'proxies.encoder', label: 'Encoder', type: 'select', options: ['auto', 'h264_amf', 'h264_nvenc', 'h264_qsv', 'libx264'] },
+    { path: 'proxies.encoder', label: 'Encoder', type: 'select', options: ['auto', 'h264_amf', 'h264_nvenc', 'h264_qsv', 'h264_videotoolbox', 'libx264'] },
     { path: 'proxies.quality', label: 'Quality (CRF / QP)', type: 'number' },
     { path: 'proxies.retention_days', label: 'Delete proxies after (days)', type: 'number' },
   ]},

@@ -97,6 +97,7 @@ def _choice(*options: str):
         if value not in options:
             raise ConfigError(f"{path} must be one of: {', '.join(options)}")
         return value
+    check.options = options  # so the dashboard's option list can be checked
     return check
 
 
@@ -280,7 +281,7 @@ SCHEMA: dict[str, Callable[[Any, str], Any]] = {
     "proxies.enabled": _boolean,
     "proxies.height": _number(64, 2160, integer=True),
     "proxies.encoder": _choice("auto", "h264_amf", "h264_nvenc", "h264_qsv",
-                               "libx264"),
+                               "h264_videotoolbox", "libx264"),
     "proxies.quality": _number(0, 51, integer=True),
     "proxies.audio_bitrate": _text(allow_empty=False, max_length=16),
     "proxies.retention_days": _number(0, 3650),

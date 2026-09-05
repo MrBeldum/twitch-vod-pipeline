@@ -9,10 +9,16 @@ in `vendor/chromium`. Window close is process-exit: we use a private
 `--user-data-dir`, so the browser process is ours, and when it dies we shut
 the pipeline down. If no Chromium-family browser is installed we fall back
 to the ordinary dashboard (system browser + serve_forever).
+
+macOS always takes that fallback. A Chrome process there outlives its last
+window (the app stays in the Dock until Cmd+Q), so "window closed" is not an
+event we can observe, and a pipeline that keeps recording behind a closed
+window is worse than a browser tab.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -20,7 +26,7 @@ import sys
 import threading
 from pathlib import Path
 
-from .config import APP_ROOT, Config
+from .config import APP_ROOT, DATA_ROOT, Config
 from .pipeline import Pipeline
 from .server import serve
 from .util import LOG, setup_logging
@@ -61,11 +67,17 @@ def browser_candidates() -> list[str]:
     return out
 
 
+_PATH_NAMES = ("chromium", "chromium.exe", "chromium-browser", "chrome",
+               "chrome.exe", "google-chrome", "google-chrome-stable")
+
+
 def find_app_browser() -> str | None:
+    if sys.platform == "darwin":
+        return None  # see the module docstring
     for candidate in browser_candidates():
         if Path(candidate).is_file():
             return candidate
-    for name in ("chromium", "chromium.exe", "chrome", "chrome.exe"):
+    for name in _PATH_NAMES:
         found = shutil.which(name)
         if found and "msedge" not in os.path.normcase(found):
             return found
@@ -75,8 +87,9 @@ def find_app_browser() -> str | None:
 def run_app(config: Config, *, port: int | None = None,
             open_window: bool = True) -> int:
     set_app_user_model_id(AUMID)
-    log_file = APP_ROOT / "logs" / "vodpipe-app.log"
-    setup_logging(log_file=log_file)
+    log_file = DATA_ROOT / "logs" / "vodpipe-app.log"
+    # The CLI already applied --verbose; adding the file handler must not undo it.
+    setup_logging(log_file=log_file, verbose=LOG.level <= logging.DEBUG)
     pipeline = Pipeline(config)
     httpd = None
     browser: subprocess.Popen | None = None
@@ -126,7 +139,7 @@ def _open_window(url: str) -> subprocess.Popen | None:
     executable = find_app_browser()
     if not executable:
         return None
-    profile = APP_ROOT / ".app-profile"
+    profile = DATA_ROOT / ".app-profile"
     profile.mkdir(parents=True, exist_ok=True)
     argv = [
         executable,
